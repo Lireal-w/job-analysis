@@ -41,3 +41,10 @@ coverage.xml
 
 # Scrapy
 .scrapy/
+
+# Output files
+output/
+debug_pages/
+
+# Browser data
+.browser_data/
