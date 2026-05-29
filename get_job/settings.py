@@ -73,10 +73,12 @@ ITEM_PIPELINES = {
     "get_job.pipelines.XiaoyuanDataCleanPipeline": 100,
     # 去重管道
     "get_job.pipelines.XiaoyuanDedupPipeline": 200,
+    # MongoDB 存储管道
+    "get_job.pipelines.XiaoyuanMongoPipeline": 300,
     # JSON 存储管道
-    "get_job.pipelines.XiaoyuanJsonPipeline": 300,
+    "get_job.pipelines.XiaoyuanJsonPipeline": 400,
     # CSV 存储管道
-    "get_job.pipelines.XiaoyuanCsvPipeline": 301,
+    "get_job.pipelines.XiaoyuanCsvPipeline": 401,
 }
 
 # Enable and configure the AutoThrottle extension (disabled by default)
@@ -119,6 +121,10 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "job_analysis")
 MONGODB_COOKIE_COLLECTION = os.getenv("MONGODB_COOKIE_COLLECTION", "cookies")
 COOKIE_EXPIRE_SECONDS = int(os.getenv("COOKIE_EXPIRE_SECONDS", "86400"))
+
+# MongoDB 数据存储集合
+MONGODB_JOB_COLLECTION = os.getenv("MONGODB_JOB_COLLECTION", "jobs")
+MONGODB_COMPANY_COLLECTION = os.getenv("MONGODB_COMPANY_COLLECTION", "companies")
 
 # 日志级别
 LOG_LEVEL = "INFO"

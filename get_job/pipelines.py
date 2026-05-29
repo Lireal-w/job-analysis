@@ -167,3 +167,117 @@ class XiaoyuanDedupPipeline:
 
         return item
 
+
+class XiaoyuanMongoPipeline:
+    """MongoDB 存储管道：将职位和公司数据分别存储到 MongoDB 对应集合"""
+
+    def __init__(self):
+        self.job_count = 0
+        self.company_count = 0
+        self._job_ids = set()  # 用于单次运行内的去重
+        self._company_ids = set()
+
+    def open_spider(self, spider):
+        """Spider 启动时初始化 MongoDB 连接"""
+        from get_job.utils.mongo_helper import (
+            get_mongo_client,
+            get_database,
+            MONGO_JOB_COLLECTION,
+            MONGO_COMPANY_COLLECTION,
+        )
+
+        # 触发连接
+        try:
+            get_mongo_client()
+            self.db = get_database()
+            self.job_collection_name = MONGO_JOB_COLLECTION
+            self.company_collection_name = MONGO_COMPANY_COLLECTION
+            logger.info(f"MongoDB 存储管道已初始化（职位集合: {self.job_collection_name}, 公司集合: {self.company_collection_name}）")
+        except Exception as e:
+            logger.error(f"MongoDB 存储管道初始化失败: {e}")
+            raise
+
+    def close_spider(self, spider):
+        """Spider 关闭时输出统计信息"""
+        from get_job.utils.mongo_helper import close_mongo_client, get_collection_count, MONGO_JOB_COLLECTION, MONGO_COMPANY_COLLECTION
+
+        job_total = get_collection_count(MONGO_JOB_COLLECTION)
+        company_total = get_collection_count(MONGO_COMPANY_COLLECTION)
+
+        logger.info(
+            f"MongoDB 存储统计 - 本次运行: 职位 {self.job_count} 条, 公司 {self.company_count} 条"
+        )
+        logger.info(
+            f"MongoDB 集合总量 - 职位: {job_total}, 公司: {company_total}"
+        )
+
+        close_mongo_client()
+
+    def process_item(self, item, spider):
+        """根据 Item 类型存储到对应集合"""
+        from get_job.items import XiaoyuanJobItem, XiaoyuanCompanyItem
+        from get_job.utils.mongo_helper import save_item_to_mongo
+
+        adapter = ItemAdapter(item)
+        data = dict(adapter)
+
+        if isinstance(item, XiaoyuanJobItem):
+            return self._process_job(data, spider)
+        elif isinstance(item, XiaoyuanCompanyItem):
+            return self._process_company(data, spider)
+        else:
+            # 未知类型，尝试按职位处理
+            return self._process_job(data, spider)
+
+    def _process_job(self, data: dict, spider) -> dict:
+        """处理职位数据"""
+        from get_job.utils.mongo_helper import save_item_to_mongo, MONGO_JOB_COLLECTION
+
+        job_id = data.get('job_id')
+
+        # 单次运行内去重
+        if job_id and job_id in self._job_ids:
+            logger.debug(f"MongoDB 管道：重复职位已跳过: {job_id}")
+            return data
+        if job_id:
+            self._job_ids.add(job_id)
+
+        success = save_item_to_mongo(
+            item=data,
+            collection_name=MONGO_JOB_COLLECTION,
+            unique_key='job_id',
+        )
+
+        if success:
+            self.job_count += 1
+            if self.job_count % 50 == 0:
+                logger.info(f"MongoDB 已存储 {self.job_count} 条职位数据")
+
+        return data
+
+    def _process_company(self, data: dict, spider) -> dict:
+        """处理公司数据"""
+        from get_job.utils.mongo_helper import save_item_to_mongo, MONGO_COMPANY_COLLECTION
+
+        company_id = data.get('company_id')
+
+        # 单次运行内去重
+        if company_id and company_id in self._company_ids:
+            logger.debug(f"MongoDB 管道：重复公司已跳过: {company_id}")
+            return data
+        if company_id:
+            self._company_ids.add(company_id)
+
+        success = save_item_to_mongo(
+            item=data,
+            collection_name=MONGO_COMPANY_COLLECTION,
+            unique_key='company_id',
+        )
+
+        if success:
+            self.company_count += 1
+            if self.company_count % 20 == 0:
+                logger.info(f"MongoDB 已存储 {self.company_count} 条公司数据")
+
+        return data
+
