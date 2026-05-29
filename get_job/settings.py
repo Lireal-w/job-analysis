@@ -111,6 +111,9 @@ FORCE_LOGIN = False
 # 登录超时时间（秒）
 LOGIN_TIMEOUT = 120
 
+# 浏览器池大小
+BROWSER_POOL_SIZE = 3
+
 # MongoDB 配置（从 .env 文件读取，此处为默认值）
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "job_analysis")

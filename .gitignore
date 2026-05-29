@@ -46,5 +46,6 @@ coverage.xml
 output/
 debug_pages/
 
-# Browser data
+# Cache directory (browser profiles, etc.)
+.cache/
 .browser_data/
