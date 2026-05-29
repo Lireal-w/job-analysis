@@ -91,6 +91,15 @@ class DrissionPageCookieMiddleware:
         logger.info("DrissionPage Cookie 中间件正在初始化...")
         logger.info("=" * 60)
 
+        # 从爬虫类获取网站特定的配置
+        self.site_url = getattr(spider, "site_url", None)
+        self.is_logged_in = getattr(spider, "is_logged_in", None)
+
+        if not self.site_url:
+            logger.warning(f"爬虫 {spider.name} 未定义 site_url，无法自动刷新 Cookie")
+        if not self.is_logged_in:
+            logger.warning(f"爬虫 {spider.name} 未定义 is_logged_in 方法，无法自动检测登录状态")
+
         # 初始化浏览器池
         pool_size = spider.settings.getint("BROWSER_POOL_SIZE", 3)
         self.browser_pool = get_browser_pool(pool_size=pool_size, headless=False)
@@ -98,7 +107,11 @@ class DrissionPageCookieMiddleware:
         logger.info(f"浏览器池已初始化，池大小: {pool_size}")
 
         # 获取 Cookie
-        self.cookies = get_cookies_with_login(force_login=self.force_login)
+        self.cookies = get_cookies_with_login(
+            url=self.site_url,
+            is_logged_in=self.is_logged_in,
+            force_login=self.force_login,
+        )
 
         if self.cookies:
             logger.info(f"成功获取 {len(self.cookies)} 个 Cookie，将注入到后续请求中")
@@ -151,10 +164,18 @@ class DrissionPageCookieMiddleware:
         if need_refresh:
             logger.warning("检测到 Cookie 过期，通过浏览器池刷新 Cookie...")
             # 使用浏览器池刷新 Cookie
-            if self.browser_pool:
-                self.cookies = refresh_cookie_via_browser(pool=self.browser_pool)
+            if self.browser_pool and self.site_url:
+                self.cookies = refresh_cookie_via_browser(
+                    url=self.site_url,
+                    is_logged_in=self.is_logged_in,
+                    pool=self.browser_pool,
+                )
             else:
-                self.cookies = get_cookies_with_login(force_login=True)
+                self.cookies = get_cookies_with_login(
+                    url=self.site_url,
+                    is_logged_in=self.is_logged_in,
+                    force_login=True,
+                )
 
             if self.cookies:
                 request.headers["Cookie"] = "; ".join([f"{k}={v}" for k, v in self.cookies.items()])

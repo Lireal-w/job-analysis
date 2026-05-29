@@ -54,13 +54,19 @@ def main():
     # 仅登录模式
     if args.login_only:
         logger.info("仅登录模式：启动浏览器池获取Cookie...")
+        from get_job.spiders.xiaoyuan_spider import XiaoyuanSpider
         from get_job.utils.browser_pool import BrowserPool
         from get_job.utils.drissionpage_login import refresh_cookie_via_browser
         from get_job.utils.mongo_helper import close_mongo_client
         pool = None
         try:
             pool = BrowserPool(pool_size=1, headless=False)
-            cookies = refresh_cookie_via_browser(pool=pool, timeout=120)
+            cookies = refresh_cookie_via_browser(
+                url=XiaoyuanSpider.site_url,
+                is_logged_in=XiaoyuanSpider.is_logged_in,
+                pool=pool,
+                timeout=120,
+            )
             if cookies:
                 logger.info(f"成功获取 {len(cookies)} 个Cookie，已保存到MongoDB")
             else:

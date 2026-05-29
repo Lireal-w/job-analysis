@@ -32,6 +32,9 @@ class XiaoyuanSpider(scrapy.Spider):
     allowed_domains = ["xiaoyuan.zhaopin.com", "zhaopin.com"]
     start_urls = ["https://xiaoyuan.zhaopin.com/"]
 
+    # 网站首页 URL（供 Cookie 刷新使用）
+    site_url = "https://xiaoyuan.zhaopin.com/"
+
     # 自定义设置
     custom_settings = {
         "DOWNLOAD_DELAY": 2,
@@ -46,6 +49,42 @@ class XiaoyuanSpider(scrapy.Spider):
 
     # 最大翻页数
     max_page = 10
+
+    @staticmethod
+    def is_logged_in(page) -> bool:
+        """
+        检查智联校园招聘网站是否已登录。
+        通过检测页面上是否存在用户头像、用户名等已登录标识来判断。
+
+        Args:
+            page: DrissionPage ChromiumPage 实例
+
+        Returns:
+            bool: 是否已登录
+        """
+        try:
+            # 检查是否存在用户头像或用户名元素（已登录状态）
+            user_avatar = page.ele(
+                'xpath://*[contains(@class,"avatar") or contains(@class,"user") or contains(@class,"header-user")]',
+                timeout=3,
+            )
+            if user_avatar:
+                return True
+
+            # 检查 URL 是否在智联校园招聘域名内且不在登录页面
+            if "xiaoyuan.zhaopin.com" in page.url and "login" not in page.url.lower():
+                # 检查是否有退出/个人中心等已登录才有的元素
+                logout_btn = page.ele(
+                    'xpath://a[contains(text(),"退出") or contains(text(),"个人中心") or contains(text(),"我的")]',
+                    timeout=3,
+                )
+                if logout_btn:
+                    return True
+
+        except Exception:
+            pass
+
+        return False
 
     def __init__(self, keyword=None, city=None, max_page=None, *args, **kwargs):
         """

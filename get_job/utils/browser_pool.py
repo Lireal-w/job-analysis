@@ -220,39 +220,6 @@ class BrowserPool:
             if instance:
                 instance.quit()
 
-    def refresh_cookie(self, instance: BrowserInstance, url: str = "https://xiaoyuan.zhaopin.com/") -> dict:
-        """
-        利用浏览器缓存刷新 Cookie
-        访问目标网站，如果浏览器缓存中有登录状态，会自动保持登录并获取最新 Cookie。
-
-        Args:
-            instance: 浏览器实例
-            url: 要访问的 URL
-
-        Returns:
-            dict: 获取到的 Cookie 字典
-        """
-        if not instance or not instance.is_alive():
-            logger.error("浏览器实例不可用")
-            return {}
-
-        try:
-            logger.info(f"浏览器实例 #{instance.instance_id} 正在访问 {url} 刷新 Cookie...")
-            instance.page.get(url)
-            time.sleep(3)
-
-            cookies = _extract_cookies(instance.page)
-            if cookies:
-                logger.info(f"浏览器实例 #{instance.instance_id} 刷新 Cookie 成功，获取 {len(cookies)} 个")
-            else:
-                logger.warning(f"浏览器实例 #{instance.instance_id} 未能获取到 Cookie")
-
-            return cookies
-
-        except Exception as e:
-            logger.error(f"刷新 Cookie 失败: {e}")
-            return {}
-
     def cleanup_idle(self):
         """清理空闲超时的浏览器实例"""
         with self._lock:
@@ -311,25 +278,6 @@ class BrowserPool:
             pass
 
 
-def _extract_cookies(page: ChromiumPage) -> dict:
-    """从 DrissionPage 页面提取 Cookie"""
-    cookies = {}
-    try:
-        raw_cookies = page.cookies()
-        if isinstance(raw_cookies, list):
-            for cookie in raw_cookies:
-                if isinstance(cookie, dict):
-                    name = cookie.get("name", "")
-                    value = cookie.get("value", "")
-                    if name and value:
-                        cookies[name] = value
-        elif isinstance(raw_cookies, dict):
-            cookies = raw_cookies
-    except Exception as e:
-        logger.error(f"提取 Cookie 失败: {e}")
-    return cookies
-
-
 # ==========================================
 # 全局浏览器池单例
 # ==========================================
@@ -368,10 +316,6 @@ if __name__ == "__main__":
         inst = pool.get()
         if inst:
             print(f"获取到浏览器实例 #{inst.instance_id}")
-
-            # 刷新 Cookie
-            cookies = pool.refresh_cookie(inst)
-            print(f"获取到 {len(cookies)} 个 Cookie")
 
             # 查看池状态
             stats = pool.get_stats()
