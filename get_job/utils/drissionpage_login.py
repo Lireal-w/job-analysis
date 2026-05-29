@@ -20,10 +20,10 @@ from typing import Callable, Optional
 
 from DrissionPage import ChromiumPage
 
-from get_job.utils.mongo_helper import (
-    save_cookies_to_mongo,
-    load_cookies_from_mongo,
-    close_mongo_client,
+from get_job.utils.redis_helper import (
+    save_cookies_to_redis,
+    load_cookies_from_redis,
+    close_redis_client,
 )
 from get_job.utils.browser_pool import (
     BrowserPool,
@@ -136,7 +136,7 @@ def refresh_cookie_via_browser(
 
         if cookies:
             logger.info(f"成功获取 {len(cookies)} 个 Cookie")
-            save_cookies_to_mongo(cookies)
+            save_cookies_to_redis(cookies)
         else:
             logger.warning("未能获取到有效 Cookie")
 
@@ -174,9 +174,9 @@ def get_cookies_with_login(
         dict: Cookie 字典
     """
     if not force_login:
-        cached_cookies = load_cookies_from_mongo()
+        cached_cookies = load_cookies_from_redis()
         if cached_cookies:
-            logger.info("使用 MongoDB 缓存的 Cookie")
+            logger.info("使用 Redis 缓存的 Cookie")
             return cached_cookies
 
     if not url:

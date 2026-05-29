@@ -57,7 +57,7 @@ def main():
         from get_job.spiders.xiaoyuan_spider import XiaoyuanSpider
         from get_job.utils.browser_pool import BrowserPool
         from get_job.utils.drissionpage_login import refresh_cookie_via_browser
-        from get_job.utils.mongo_helper import close_mongo_client
+        from get_job.utils.redis_helper import close_redis_client
         pool = None
         try:
             pool = BrowserPool(pool_size=1, headless=False)
@@ -68,13 +68,13 @@ def main():
                 timeout=120,
             )
             if cookies:
-                logger.info(f"成功获取 {len(cookies)} 个Cookie，已保存到MongoDB")
+                logger.info(f"成功获取 {len(cookies)} 个Cookie，已保存到Redis")
             else:
                 logger.error("获取Cookie失败")
         finally:
             if pool:
                 pool.shutdown()
-            close_mongo_client()
+            close_redis_client()
         return
 
     # 构建爬虫运行命令

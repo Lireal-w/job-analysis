@@ -1,11 +1,11 @@
 """
 MongoDB 工具模块
-提供 MongoDB 连接和操作功能，使用 .env 文件管理数据库配置。
+提供 MongoDB 连接和数据存储操作功能，使用 .env 文件管理数据库配置。
+Cookie 缓存已迁移到 redis_helper.py，本模块只负责数据存储。
 """
 
 import os
 import logging
-from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -19,8 +19,6 @@ logger = logging.getLogger(__name__)
 # MongoDB 配置
 MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGO_DATABASE = os.getenv("MONGODB_DATABASE", "job_analysis")
-MONGO_COOKIE_COLLECTION = os.getenv("MONGODB_COOKIE_COLLECTION", "cookies")
-COOKIE_EXPIRE_SECONDS = int(os.getenv("COOKIE_EXPIRE_SECONDS", "86400"))
 
 # 数据存储集合
 MONGO_JOB_COLLECTION = os.getenv("MONGODB_JOB_COLLECTION", "jobs")
@@ -56,123 +54,10 @@ def get_database():
     return _db
 
 
-def get_collection(collection_name: str = None):
+def get_collection(collection_name: str):
     """获取集合实例"""
     db = get_database()
-    collection_name = collection_name or MONGO_COOKIE_COLLECTION
     return db[collection_name]
-
-
-# ==========================================
-# Cookie 缓存操作
-# ==========================================
-
-COOKIE_DOC_ID = "xiaoyuan_zhaopin"
-
-
-def save_cookies_to_mongo(cookies: dict, site: str = None) -> bool:
-    """
-    保存 Cookie 到 MongoDB
-
-    Args:
-        cookies: Cookie 字典
-        site: 站点标识，默认为 "xiaoyuan_zhaopin"
-
-    Returns:
-        bool: 是否保存成功
-    """
-    site = site or COOKIE_DOC_ID
-    try:
-        collection = get_collection()
-        doc = {
-            "_id": site,
-            "cookies": cookies,
-            "updated_at": datetime.now(timezone.utc),
-            "cookie_count": len(cookies),
-        }
-        collection.update_one(
-            {"_id": site},
-            {"$set": doc},
-            upsert=True,
-        )
-        logger.info(f"Cookie 已保存到 MongoDB（站点: {site}, 数量: {len(cookies)}）")
-        return True
-    except OperationFailure as e:
-        logger.error(f"保存 Cookie 到 MongoDB 失败: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"保存 Cookie 发生未知错误: {e}")
-        return False
-
-
-def load_cookies_from_mongo(site: str = None, check_expire: bool = True) -> dict:
-    """
-    从 MongoDB 加载 Cookie
-
-    Args:
-        site: 站点标识，默认为 "xiaoyuan_zhaopin"
-        check_expire: 是否检查过期时间
-
-    Returns:
-        dict: Cookie 字典，如果不存在或已过期则返回空字典
-    """
-    site = site or COOKIE_DOC_ID
-    try:
-        collection = get_collection()
-        doc = collection.find_one({"_id": site})
-
-        if not doc:
-            logger.info(f"MongoDB 中未找到 Cookie（站点: {site}）")
-            return {}
-
-        # 检查过期时间
-        if check_expire:
-            updated_at = doc.get("updated_at")
-            if updated_at:
-                elapsed = (datetime.now(timezone.utc) - updated_at).total_seconds()
-                if elapsed > COOKIE_EXPIRE_SECONDS:
-                    logger.info(
-                        f"Cookie 已过期（站点: {site}, "
-                        f"已过 {int(elapsed)}秒 / 过期阈值 {COOKIE_EXPIRE_SECONDS}秒）"
-                    )
-                    return {}
-
-        cookies = doc.get("cookies", {})
-        if cookies:
-            logger.info(f"从 MongoDB 加载了 {len(cookies)} 个 Cookie（站点: {site}）")
-        return cookies
-
-    except ConnectionFailure as e:
-        logger.error(f"MongoDB 连接失败，无法加载 Cookie: {e}")
-        return {}
-    except Exception as e:
-        logger.error(f"加载 Cookie 发生未知错误: {e}")
-        return {}
-
-
-def delete_cookies_from_mongo(site: str = None) -> bool:
-    """
-    从 MongoDB 删除 Cookie
-
-    Args:
-        site: 站点标识
-
-    Returns:
-        bool: 是否删除成功
-    """
-    site = site or COOKIE_DOC_ID
-    try:
-        collection = get_collection()
-        result = collection.delete_one({"_id": site})
-        if result.deleted_count > 0:
-            logger.info(f"Cookie 已从 MongoDB 删除（站点: {site}）")
-            return True
-        else:
-            logger.info(f"MongoDB 中未找到需要删除的 Cookie（站点: {site}）")
-            return False
-    except Exception as e:
-        logger.error(f"删除 Cookie 失败: {e}")
-        return False
 
 
 # ==========================================
@@ -345,14 +230,15 @@ if __name__ == "__main__":
         collections = db.list_collection_names()
         print(f"数据库 {MONGO_DATABASE} 中的集合: {collections}")
 
-        # 测试 Cookie 读写
-        test_cookies = {"test_key": "test_value", "session_id": "abc123"}
-        save_cookies_to_mongo(test_cookies)
-        loaded = load_cookies_from_mongo()
-        print(f"加载的 Cookie: {loaded}")
+        # 测试数据读写
+        test_item = {"job_id": "test_001", "job_title": "测试职位", "company_name": "测试公司"}
+        save_item_to_mongo(test_item, MONGO_JOB_COLLECTION, unique_key="job_id")
+        results = query_items_from_mongo(MONGO_JOB_COLLECTION, {"job_id": "test_001"})
+        print(f"查询结果: {results}")
 
         # 清理测试数据
-        delete_cookies_from_mongo()
+        db[MONGO_JOB_COLLECTION].delete_many({"job_id": "test_001"})
+        print("测试数据已清理")
     except Exception as e:
         print(f"测试失败: {e}")
     finally:

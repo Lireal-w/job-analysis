@@ -119,12 +119,18 @@ BROWSER_POOL_SIZE = 3
 # MongoDB 配置（从 .env 文件读取，此处为默认值）
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "job_analysis")
-MONGODB_COOKIE_COLLECTION = os.getenv("MONGODB_COOKIE_COLLECTION", "cookies")
-COOKIE_EXPIRE_SECONDS = int(os.getenv("COOKIE_EXPIRE_SECONDS", "86400"))
 
 # MongoDB 数据存储集合
 MONGODB_JOB_COLLECTION = os.getenv("MONGODB_JOB_COLLECTION", "jobs")
 MONGODB_COMPANY_COLLECTION = os.getenv("MONGODB_COMPANY_COLLECTION", "companies")
+
+# Redis 配置（Cookie 缓存）
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "") or None
+REDIS_DATABASE = int(os.getenv("REDIS_DATABASE", "0"))
+REDIS_COOKIE_KEY_PREFIX = os.getenv("REDIS_COOKIE_KEY_PREFIX", "cookie")
+COOKIE_EXPIRE_SECONDS = int(os.getenv("COOKIE_EXPIRE_SECONDS", "86400"))
 
 # 日志级别
 LOG_LEVEL = "INFO"
