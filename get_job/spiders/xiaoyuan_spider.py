@@ -7,7 +7,8 @@
 2. 使用获取到的 Cookie 发起请求，爬取职位列表页
 3. 解析职位列表，提取职位详情链接
 4. 访问职位详情页，提取完整职位信息
-5. 数据通过 Pipeline 进行清洗、去重和存储
+5. 访问公司详情页，提取公司信息
+6. 数据通过 Pipeline 进行清洗、去重和存储
 """
 
 import json
@@ -50,11 +51,71 @@ class XiaoyuanSpider(scrapy.Spider):
     # 最大翻页数
     max_page = 10
 
+    # ==========================================
+    # URL 配置
+    # ==========================================
+
+    # 搜索页 URL
+    SEARCH_URL = "https://xiaoyuan.zhaopin.com/search/index"
+
+    # 职位详情页 URL 模板
+    JOB_DETAIL_URL = "https://www.zhaopin.com/companydetail/{job_id}"
+
+    # 公司详情页 URL 模板
+    COMPANY_DETAIL_URL = "https://www.zhaopin.com/companydetail/{company_id}"
+
+    # ==========================================
+    # CSS 选择器配置
+    # ==========================================
+
+    # 搜索页选择器
+    SEARCH_SELECTORS = {
+        "job_item": "div.job-item",
+        "job_title": "div.job-item h3 a",
+        "job_link": "div.job-item h3 a",
+        "company_name": "div.job-item div.company-name",
+        "salary": "div.job-item span.salary",
+        "location": "div.job-item span.location",
+        "publish_time": "div.job-item span.publish-time",
+        "education": "div.job-item span.education",
+        "experience": "div.job-item span.experience",
+    }
+
+    # 职位详情页选择器
+    JOB_DETAIL_SELECTORS = {
+        "job_title": "h1.job-title",
+        "salary": "div.job-info span.salary",
+        "location": "div.job-info span.location",
+        "experience": "div.job-info span.experience",
+        "education": "div.job-info span.education",
+        "company_name": "div.company-info a.company-name",
+        "company_scale": "div.company-info span.scale",
+        "company_industry": "div.company-info span.industry",
+        "job_description": "div.job-description",
+        "job_requirements": "div.job-requirements",
+        "welfare": "div.job-welfare span",
+    }
+
+    # 公司详情页选择器
+    COMPANY_DETAIL_SELECTORS = {
+        "company_name": "h1.company-name",
+        "company_logo": "div.company-header img.logo",
+        "company_scale": "div.company-info span.scale",
+        "company_founded": "div.company-info span.founded",
+        "company_industry": "div.company-info span.industry",
+        "company_address": "div.company-info span.address",
+        "company_description": "div.company-description",
+        "job_list": "div.job-list div.job-item",
+    }
+
+    # 已登录用户头像 XPath
+    LOGGED_IN_XPATH = "//div[@class='user-info']//img[@class='avatar']/@src"
+
     @staticmethod
     def is_logged_in(page) -> bool:
         """
         检查智联校园招聘网站是否已登录。
-        通过检测页面上是否存在用户头像、用户名等已登录标识来判断。
+        通过检测页面上是否存在已登录用户头像来判断。
 
         Args:
             page: DrissionPage ChromiumPage 实例
@@ -63,23 +124,21 @@ class XiaoyuanSpider(scrapy.Spider):
             bool: 是否已登录
         """
         try:
-            # 检查是否存在用户头像或用户名元素（已登录状态）
-            user_avatar = page.ele(
-                'xpath://*[contains(@class,"avatar") or contains(@class,"user") or contains(@class,"header-user")]',
+            # 检查已登录用户头像（精确 XPath）
+            avatar_src = page.ele(
+                "xpath://div[@class='user-info']//img[@class='avatar']/@src",
                 timeout=3,
             )
-            if user_avatar:
+            if avatar_src:
                 return True
 
-            # 检查 URL 是否在智联校园招聘域名内且不在登录页面
-            if "xiaoyuan.zhaopin.com" in page.url and "login" not in page.url.lower():
-                # 检查是否有退出/个人中心等已登录才有的元素
-                logout_btn = page.ele(
-                    'xpath://a[contains(text(),"退出") or contains(text(),"个人中心") or contains(text(),"我的")]',
-                    timeout=3,
-                )
-                if logout_btn:
-                    return True
+            # 备用检查：用户信息区域
+            user_info = page.ele(
+                "xpath://div[@class='user-info']",
+                timeout=3,
+            )
+            if user_info:
+                return True
 
         except Exception:
             pass
@@ -107,11 +166,10 @@ class XiaoyuanSpider(scrapy.Spider):
     def start_requests(self):
         """
         生成初始请求
-        先访问首页确认 Cookie 有效，然后开始搜索职位
+        先访问搜索页确认 Cookie 有效，然后开始搜索职位
         """
-        # 先访问首页，验证 Cookie 是否有效
         yield Request(
-            url="https://xiaoyuan.zhaopin.com/search/index",
+            url=self.SEARCH_URL,
             callback=self.parse_homepage,
             dont_filter=True,
             meta={"dont_redirect": False},
@@ -150,19 +208,33 @@ class XiaoyuanSpider(scrapy.Spider):
         构建搜索 URL
 
         智联校园招聘的搜索 URL 格式：
-        https://xiaoyuan.zhaopin.com/search/jobs?keyword=Python&city=北京&pageNumber=1
+        https://xiaoyuan.zhaopin.com/search/index?keyword=Python&city=北京&page=1
+
+        支持参数：keyword, city, salary, experience, education, page
         """
         params = {
             "keyword": keyword,
             "city": city,
-            "pageNumber": page,
+            "page": page,
         }
-        base_url = "https://xiaoyuan.zhaopin.com/search/jobs"
-        return f"{base_url}?{urlencode(params)}"
+        return f"{self.SEARCH_URL}?{urlencode(params)}"
+
+    # ==========================================
+    # 搜索页解析
+    # ==========================================
 
     def parse_job_list(self, response):
         """
-        解析职位列表页
+        解析职位列表页（搜索页）
+        使用精确 CSS 选择器提取搜索页数据字段：
+        - 职位名称: div.job-item h3 a
+        - 职位链接: div.job-item h3 a (href)
+        - 公司名称: div.job-item div.company-name
+        - 薪资范围: div.job-item span.salary
+        - 工作地点: div.job-item span.location
+        - 发布时间: div.job-item span.publish-time
+        - 学历要求: div.job-item span.education
+        - 工作经验: div.job-item span.experience
         """
         keyword = response.meta.get("keyword", "")
         city = response.meta.get("city", "")
@@ -179,58 +251,52 @@ class XiaoyuanSpider(scrapy.Spider):
         except (json.JSONDecodeError, TypeError):
             pass
 
-        # 解析 HTML 响应
-        # 职位列表项选择器（根据实际页面结构调整）
-        job_items = response.css('div.job-list-item, div[class*="job-item"], div[class*="position-item"]')
-
-        if not job_items:
-            # 尝试其他选择器
-            job_items = response.css('a[href*="/jobs/"], a[href*="/job/"], div[class*="search-result"]')
+        # 解析 HTML 响应 - 使用精确 CSS 选择器
+        sel = self.SEARCH_SELECTORS
+        job_items = response.css(sel["job_item"])
 
         if not job_items:
             logger.warning(f"未找到职位列表项 - 关键词: {keyword}, 城市: {city}, 页码: {page}")
-            # 尝试保存页面用于调试
             self._save_debug_page(response, f"job_list_{keyword}_{city}_{page}")
             return
 
+        logger.info(f"找到 {len(job_items)} 个职位项 - 关键词: {keyword}, 城市: {city}, 页码: {page}")
+
         for job_item in job_items:
             # 提取职位详情链接
-            detail_url = job_item.css('a[href*="/jobs/"]::attr(href), a[href*="/job/"]::attr(href)').get()
-            if not detail_url:
-                detail_url = job_item.css("a::attr(href)").get()
+            detail_link = job_item.css(f'{sel["job_link"]}::attr(href)').get()
+            if not detail_link:
+                continue
 
-            if detail_url:
-                detail_url = urljoin(response.url, detail_url)
+            detail_url = urljoin(response.url, detail_link)
 
-                # 先从列表页提取基本信息
-                item = XiaoyuanJobItem()
-                item["job_title"] = self._extract_text(job_item, [
-                    'span[class*="job-name"]', 'div[class*="job-name"]',
-                    'a[class*="job-title"]', 'h3', 'h4',
-                    'span[class*="title"]', 'div[class*="title"]',
-                ])
-                item["company_name"] = self._extract_text(job_item, [
-                    'span[class*="company"]', 'div[class*="company"]',
-                    'a[class*="company"]', 'span[class*="corp"]',
-                ])
-                item["salary_desc"] = self._extract_text(job_item, [
-                    'span[class*="salary"]', 'div[class*="salary"]',
-                    'span[class*="pay"]', 'div[class*="pay"]',
-                    'em[class*="salary"]',
-                ])
-                item["work_city"] = city
-                item["source_url"] = detail_url
+            # 从搜索页提取基本信息
+            item = XiaoyuanJobItem()
 
-                yield Request(
-                    url=detail_url,
-                    callback=self.parse_job_detail,
-                    meta={"item": item, "keyword": keyword, "city": city},
-                    dont_filter=True,
-                )
+            # 搜索页数据字段
+            item["job_title"] = job_item.css(f'{sel["job_title"]}::text').get("").strip()
+            item["company_name"] = job_item.css(f'{sel["company_name"]}::text').get("").strip()
+            item["salary_desc"] = job_item.css(f'{sel["salary"]}::text').get("").strip()
+            item["work_city"] = job_item.css(f'{sel["location"]}::text').get("").strip() or city
+            item["publish_date"] = job_item.css(f'{sel["publish_time"]}::text').get("").strip()
+            item["education"] = job_item.css(f'{sel["education"]}::text').get("").strip()
+            item["experience"] = job_item.css(f'{sel["experience"]}::text').get("").strip()
+            item["source_url"] = detail_url
+
+            # 从详情页 URL 提取 job_id
+            job_id_match = re.search(r'/(\d+)', detail_link)
+            if job_id_match:
+                item["job_id"] = job_id_match.group(1)
+
+            yield Request(
+                url=detail_url,
+                callback=self.parse_job_detail,
+                meta={"item": item, "keyword": keyword, "city": city},
+                dont_filter=True,
+            )
 
     def _parse_json_job_list(self, json_data: dict, keyword: str, city: str):
         """解析 JSON 格式的职位列表"""
-        # 根据实际 API 响应结构调整
         job_list = json_data.get("data", {}).get("list", [])
         if not job_list:
             job_list = json_data.get("data", {}).get("result", [])
@@ -263,7 +329,7 @@ class XiaoyuanSpider(scrapy.Spider):
             # 构建详情页 URL
             job_id = item["job_id"]
             if job_id:
-                detail_url = f"https://xiaoyuan.zhaopin.com/jobs/{job_id}"
+                detail_url = self.JOB_DETAIL_URL.format(job_id=job_id)
                 item["source_url"] = detail_url
 
                 yield Request(
@@ -277,9 +343,25 @@ class XiaoyuanSpider(scrapy.Spider):
                 item["source_platform"] = "智联校园招聘"
                 yield item
 
+    # ==========================================
+    # 职位详情页解析
+    # ==========================================
+
     def parse_job_detail(self, response):
         """
         解析职位详情页
+        使用精确 CSS 选择器提取职位详情页数据字段：
+        - 职位名称: h1.job-title
+        - 薪资范围: div.job-info span.salary
+        - 工作地点: div.job-info span.location
+        - 工作经验: div.job-info span.experience
+        - 学历要求: div.job-info span.education
+        - 公司名称: div.company-info a.company-name
+        - 公司规模: div.company-info span.scale
+        - 行业领域: div.company-info span.industry
+        - 职位描述: div.job-description
+        - 任职要求: div.job-requirements
+        - 福利待遇: div.job-welfare span
         """
         item = response.meta.get("item", XiaoyuanJobItem())
         keyword = response.meta.get("keyword", "")
@@ -287,128 +369,67 @@ class XiaoyuanSpider(scrapy.Spider):
 
         logger.info(f"正在解析职位详情 - {item.get('job_title', 'Unknown')}")
 
-        # 如果没有从列表页获取到基本信息，从详情页提取
-        if not item.get("job_title"):
-            item["job_title"] = self._extract_text(response, [
-                'h1[class*="job"]', 'h1[class*="title"]', 'h1',
-                'div[class*="job-name"]', 'span[class*="job-name"]',
-            ])
+        sel = self.JOB_DETAIL_SELECTORS
 
-        if not item.get("company_name"):
-            item["company_name"] = self._extract_text(response, [
-                'a[class*="company"]', 'span[class*="company"]',
-                'div[class*="company-name"]', 'a[class*="corp"]',
-            ])
-
-        if not item.get("salary_desc"):
-            item["salary_desc"] = self._extract_text(response, [
-                'span[class*="salary"]', 'div[class*="salary"]',
-                'em[class*="salary"]', 'span[class*="pay"]',
-            ])
-
-        # 从详情页提取更多字段
-        # 职位ID
+        # 职位ID（从 URL 提取）
         if not item.get("job_id"):
-            job_id = response.css('[data-job-id]::attr(data-job-id)').get()
-            if not job_id:
-                match = re.search(r'/jobs/(\d+)', response.url)
-                job_id = match.group(1) if match else ""
-            item["job_id"] = job_id
+            match = re.search(r'/companydetail/(\d+)', response.url)
+            item["job_id"] = match.group(1) if match else ""
+
+        # 职位名称
+        if not item.get("job_title"):
+            item["job_title"] = response.css(f'{sel["job_title"]}::text').get("").strip()
+
+        # 薪资范围
+        if not item.get("salary_desc"):
+            item["salary_desc"] = response.css(f'{sel["salary"]}::text').get("").strip()
+
+        # 工作地点
+        if not item.get("work_city"):
+            item["work_city"] = response.css(f'{sel["location"]}::text').get("").strip()
+
+        # 工作经验
+        if not item.get("experience"):
+            item["experience"] = response.css(f'{sel["experience"]}::text').get("").strip()
 
         # 学历要求
         if not item.get("education"):
-            item["education"] = self._extract_text(response, [
-                'span[class*="edu"]', 'div[class*="edu"]',
-                'span[class*="education"]', 'li[class*="edu"]',
-            ])
+            item["education"] = response.css(f'{sel["education"]}::text').get("").strip()
 
-        # 经验要求
-        if not item.get("experience"):
-            item["experience"] = self._extract_text(response, [
-                'span[class*="exp"]', 'div[class*="exp"]',
-                'span[class*="experience"]', 'li[class*="exp"]',
-            ])
-
-        # 工作城市
-        if not item.get("work_city"):
-            item["work_city"] = self._extract_text(response, [
-                'span[class*="city"]', 'div[class*="city"]',
-                'span[class*="location"]', 'div[class*="location"]',
-            ])
-
-        # 工作地址
-        if not item.get("work_address"):
-            item["work_address"] = self._extract_text(response, [
-                'span[class*="address"]', 'div[class*="address"]',
-                'span[class*="work-addr"]', 'div[class*="work-addr"]',
-            ])
-
-        # 职位描述
-        item["job_description"] = self._extract_text(response, [
-            'div[class*="job-description"]', 'div[class*="job-desc"]',
-            'div[class*="description"]', 'div[class*="desc-content"]',
-            'div[class*="detail-content"]', 'div[class*="job-detail"]',
-        ])
-
-        # 任职要求
-        item["job_requirement"] = self._extract_text(response, [
-            'div[class*="requirement"]', 'div[class*="require"]',
-            'div[class*="qualification"]', 'div[class*="job-require"]',
-        ])
-
-        # 技能要求
-        skills = response.css(
-            'div[class*="skill"] span::text, '
-            'span[class*="tag"]::text, '
-            'div[class*="keyword"] span::text, '
-            'a[class*="tag"]::text'
-        ).getall()
-        item["skills"] = [s.strip() for s in skills if s.strip()]
-
-        # 福利待遇
-        if not item.get("welfare"):
-            welfare = response.css(
-                'div[class*="welfare"] span::text, '
-                'span[class*="benefit"]::text, '
-                'div[class*="tag-list"] span::text'
-            ).getall()
-            item["welfare"] = " | ".join([w.strip() for w in welfare if w.strip()])
-
-        # 公司类型
-        if not item.get("company_type"):
-            item["company_type"] = self._extract_text(response, [
-                'span[class*="company-type"]', 'div[class*="company-type"]',
-                'span[class*="corp-type"]', 'div[class*="corp-type"]',
-            ])
+        # 公司名称
+        if not item.get("company_name"):
+            item["company_name"] = response.css(f'{sel["company_name"]}::text').get("").strip()
 
         # 公司规模
         if not item.get("company_scale"):
-            item["company_scale"] = self._extract_text(response, [
-                'span[class*="company-scale"]', 'div[class*="company-scale"]',
-                'span[class*="corp-scale"]', 'div[class*="corp-scale"]',
-            ])
+            item["company_scale"] = response.css(f'{sel["company_scale"]}::text').get("").strip()
 
-        # 公司行业
+        # 行业领域
         if not item.get("company_industry"):
-            item["company_industry"] = self._extract_text(response, [
-                'span[class*="industry"]', 'div[class*="industry"]',
-                'a[class*="industry"]',
-            ])
+            item["company_industry"] = response.css(f'{sel["company_industry"]}::text').get("").strip()
 
-        # 发布日期
-        if not item.get("publish_date"):
-            item["publish_date"] = self._extract_text(response, [
-                'span[class*="date"]', 'div[class*="date"]',
-                'span[class*="time"]', 'div[class*="time"]',
-                'span[class*="publish"]',
-            ])
+        # 职位描述（提取完整文本，包含子元素）
+        job_desc = response.css(sel["job_description"])
+        if job_desc:
+            item["job_description"] = self._extract_full_text(job_desc)
+        else:
+            item["job_description"] = ""
 
-        # 招聘人数
-        if not item.get("recruit_num"):
-            item["recruit_num"] = self._extract_text(response, [
-                'span[class*="recruit"]', 'div[class*="recruit"]',
-                'span[class*="hire"]', 'div[class*="hire"]',
-            ])
+        # 任职要求（提取完整文本，包含子元素）
+        job_req = response.css(sel["job_requirements"])
+        if job_req:
+            item["job_requirement"] = self._extract_full_text(job_req)
+        else:
+            item["job_requirement"] = ""
+
+        # 福利待遇（多个 span 标签）
+        if not item.get("welfare"):
+            welfare_items = response.css(f'{sel["welfare"]}::text').getall()
+            item["welfare"] = " | ".join([w.strip() for w in welfare_items if w.strip()])
+
+        # 工作地址（详情页可能有更详细的地址）
+        if not item.get("work_address"):
+            item["work_address"] = response.css(f'{sel["location"]}::text').get("").strip()
 
         # 设置来源 URL
         item["source_url"] = response.url
@@ -416,89 +437,80 @@ class XiaoyuanSpider(scrapy.Spider):
 
         yield item
 
-        # 尝试提取公司详情链接，爬取公司信息
-        company_url = response.css(
-            'a[class*="company"]::attr(href), '
-            'a[href*="/company/"]::attr(href), '
-            'a[href*="/corp/"]::attr(href)'
-        ).get()
+        # 提取公司详情链接，爬取公司信息
+        company_url = response.css(f'{sel["company_name"]}::attr(href)').get()
+        if not company_url:
+            # 尝试从公司 ID 构建 URL
+            if item.get("company_id"):
+                company_url = self.COMPANY_DETAIL_URL.format(company_id=item["company_id"])
 
         if company_url:
             company_url = urljoin(response.url, company_url)
             yield Request(
                 url=company_url,
                 callback=self.parse_company_detail,
-                meta={"city": city},
+                meta={"city": city, "company_name": item.get("company_name", "")},
                 dont_filter=True,
             )
+
+    # ==========================================
+    # 公司详情页解析
+    # ==========================================
 
     def parse_company_detail(self, response):
         """
         解析公司详情页
+        使用精确 CSS 选择器提取公司详情页数据字段：
+        - 公司名称: h1.company-name
+        - 公司Logo: div.company-header img.logo
+        - 公司规模: div.company-info span.scale
+        - 成立时间: div.company-info span.founded
+        - 行业领域: div.company-info span.industry
+        - 公司地址: div.company-info span.address
+        - 公司简介: div.company-description
+        - 在招职位: div.job-list div.job-item
         """
         item = XiaoyuanCompanyItem()
 
-        # 公司ID
-        company_id = response.css('[data-company-id]::attr(data-company-id)').get()
-        if not company_id:
-            match = re.search(r'/company/(\d+)', response.url)
-            company_id = match.group(1) if match else ""
-        item["company_id"] = company_id
+        sel = self.COMPANY_DETAIL_SELECTORS
+
+        # 公司ID（从 URL 提取）
+        match = re.search(r'/companydetail/(\d+)', response.url)
+        item["company_id"] = match.group(1) if match else ""
 
         # 公司名称
-        item["company_name"] = self._extract_text(response, [
-            'h1[class*="company"]', 'h1[class*="corp"]',
-            'div[class*="company-name"]', 'span[class*="company-name"]',
-            'h1', 'h2',
-        ])
+        item["company_name"] = response.css(f'{sel["company_name"]}::text').get("").strip()
 
-        # 公司简称
-        item["company_short_name"] = self._extract_text(response, [
-            'span[class*="short-name"]', 'div[class*="short-name"]',
-        ])
-
-        # 公司类型
-        item["company_type"] = self._extract_text(response, [
-            'span[class*="company-type"]', 'div[class*="company-type"]',
-            'span[class*="corp-type"]',
-        ])
+        # 公司Logo
+        item["company_logo"] = response.css(f'{sel["company_logo"]}::attr(src)').get("")
 
         # 公司规模
-        item["company_scale"] = self._extract_text(response, [
-            'span[class*="company-scale"]', 'div[class*="company-scale"]',
-            'span[class*="corp-scale"]',
-        ])
+        item["company_scale"] = response.css(f'{sel["company_scale"]}::text').get("").strip()
 
-        # 公司行业
-        item["company_industry"] = self._extract_text(response, [
-            'span[class*="industry"]', 'div[class*="industry"]',
-            'a[class*="industry"]',
-        ])
+        # 公司类型
+        item["company_type"] = ""
 
-        # 公司简介
-        item["company_description"] = self._extract_text(response, [
-            'div[class*="company-desc"]', 'div[class*="company-intro"]',
-            'div[class*="corp-desc"]', 'div[class*="corp-intro"]',
-            'div[class*="description"]', 'div[class*="intro"]',
-        ])
+        # 行业领域
+        item["company_industry"] = response.css(f'{sel["company_industry"]}::text').get("").strip()
 
         # 公司地址
-        item["company_address"] = self._extract_text(response, [
-            'span[class*="address"]', 'div[class*="address"]',
-            'span[class*="location"]',
-        ])
+        item["company_address"] = response.css(f'{sel["company_address"]}::text').get("").strip()
+
+        # 公司简介（提取完整文本，包含子元素）
+        company_desc = response.css(sel["company_description"])
+        if company_desc:
+            item["company_description"] = self._extract_full_text(company_desc)
+        else:
+            item["company_description"] = ""
+
+        # 公司简称
+        item["company_short_name"] = ""
 
         # 公司网站
         item["company_website"] = response.css(
             'a[class*="website"]::attr(href), '
             'a[class*="url"]::attr(href)'
-        ).get()
-
-        # 公司Logo
-        item["company_logo"] = response.css(
-            'img[class*="logo"]::attr(src), '
-            'img[class*="avatar"]::attr(src)'
-        ).get()
+        ).get("")
 
         # 元数据
         item["source_url"] = response.url
@@ -506,24 +518,48 @@ class XiaoyuanSpider(scrapy.Spider):
 
         yield item
 
+        # 解析在招职位列表
+        job_items = response.css(sel["job_list"])
+        if job_items:
+            search_sel = self.SEARCH_SELECTORS
+            for job_item in job_items:
+                detail_link = job_item.css(f'{search_sel["job_link"]}::attr(href)').get()
+                if not detail_link:
+                    continue
+
+                detail_url = urljoin(response.url, detail_link)
+
+                job = XiaoyuanJobItem()
+                job["job_title"] = job_item.css(f'{search_sel["job_title"]}::text').get("").strip()
+                job["company_name"] = item.get("company_name", "")
+                job["company_id"] = item.get("company_id", "")
+                job["salary_desc"] = job_item.css(f'{search_sel["salary"]}::text').get("").strip()
+                job["work_city"] = response.meta.get("city", "")
+                job["source_url"] = detail_url
+
+                job_id_match = re.search(r'/(\d+)', detail_link)
+                if job_id_match:
+                    job["job_id"] = job_id_match.group(1)
+
+                yield Request(
+                    url=detail_url,
+                    callback=self.parse_job_detail,
+                    meta={"item": job, "keyword": "", "city": response.meta.get("city", "")},
+                    dont_filter=True,
+                )
+
+    # ==========================================
+    # 工具方法
+    # ==========================================
+
     @staticmethod
-    def _extract_text(element, selectors: list) -> str:
+    def _extract_full_text(element) -> str:
         """
-        使用多个 CSS 选择器尝试提取文本，返回第一个匹配的结果
+        提取元素及其所有子元素的文本内容，并清理多余空白
         """
-        for selector in selectors:
-            text = element.css(f"{selector}::text").get()
-            if text and text.strip():
-                return text.strip()
-
-            # 尝试获取所有子文本拼接
-            texts = element.css(f"{selector} *::text").getall()
-            if texts:
-                combined = " ".join([t.strip() for t in texts if t.strip()])
-                if combined:
-                    return combined
-
-        return ""
+        texts = element.css('*::text').getall()
+        combined = " ".join([t.strip() for t in texts if t.strip()])
+        return re.sub(r'\s+', ' ', combined)
 
     @staticmethod
     def _save_debug_page(response, filename: str):
