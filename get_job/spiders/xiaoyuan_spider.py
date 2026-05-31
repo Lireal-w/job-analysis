@@ -55,7 +55,7 @@ class XiaoyuanSpider(scrapy.Spider):
     search_keywords = get_search_keywords_from_env()
 
     # 目标地区列表：[(地区名称, 地区ID), ...]（优先从 .env 读取，否则使用默认值）
-    target_regions: List[Tuple[str, int]] = get_target_regions_from_env()
+    target_regions: List[Tuple[str, int]] = get_target_regions_from_env(region_factory)
 
     # 最大翻页数（优先从 .env 读取，否则使用默认值）
     max_page = get_max_page_from_env()
