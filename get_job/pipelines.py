@@ -63,23 +63,128 @@ class XiaoyuanDataCleanPipeline:
 
     @staticmethod
     def _parse_salary(salary_desc: str):
-        """解析薪资描述，返回最低和最高薪资"""
+        """
+        解析薪资描述，返回 (最低月薪, 最高月薪)，单位统一为 元/月。
+
+        支持的格式：
+        - "8000-12000元/月"        -> (8000, 12000)
+        - "8K-12K"                 -> (8000, 12000)
+        - "1-1.5万"                -> (10000, 15000)
+        - "1.5-3万·14薪"           -> (15000, 30000)
+        - "100-120元/天"           -> (2200, 2640)   按22个工作日换算
+        - "15-20元/时"             -> (2640, 3520)   按8h/天、22天/月换算
+        - "5000元/月"              -> (5000, 5000)
+        - "面议"                   -> (None, None)
+        """
         if not salary_desc:
             return None, None
 
+        salary_desc = salary_desc.strip()
+        if not salary_desc or salary_desc in ("面议", " negotiable", "薪资面议"):
+            return None, None
+
         try:
-            # 匹配类似 "8000-12000元/月" 或 "8K-12K" 的格式
-            pattern = r'(\d+)\s*[kK千]?\s*[-~至到]\s*(\d+)\s*[kK千]?'
-            match = re.search(pattern, salary_desc)
-            if match:
-                min_val = int(match.group(1))
-                max_val = int(match.group(2))
+            # 提取年终奖月数（如 "·14薪" -> annual_months=14）
+            annual_months = None
+            bonus_match = re.search(r'[·\-\s](\d+)薪', salary_desc)
+            if bonus_match:
+                annual_months = int(bonus_match.group(1))
+                # 移除年终奖标记，避免干扰后续解析
+                salary_desc = salary_desc[:bonus_match.start()].strip()
+
+            # ---- 按天计薪：X-Y元/天 ----
+            day_match = re.match(
+                r'([\d.]+)\s*[-~至到]\s*([\d.]+)\s*元\s*/\s*天',
+                salary_desc,
+            )
+            if day_match:
+                min_daily = float(day_match.group(1))
+                max_daily = float(day_match.group(2))
+                # 按 22 个工作日换算为月薪
+                min_monthly = round(min_daily * 22)
+                max_monthly = round(max_daily * 22)
+                return min_monthly, max_monthly
+
+            # ---- 按小时计薪：X-Y元/时(小时) ----
+            hour_match = re.match(
+                r'([\d.]+)\s*[-~至到]\s*([\d.]+)\s*元\s*/\s*(?:时|小时)',
+                salary_desc,
+            )
+            if hour_match:
+                min_hourly = float(hour_match.group(1))
+                max_hourly = float(hour_match.group(2))
+                # 按 8小时/天、22天/月 换算为月薪
+                min_monthly = round(min_hourly * 8 * 22)
+                max_monthly = round(max_hourly * 8 * 22)
+                return min_monthly, max_monthly
+
+            # ---- 万单位：X-Y万 ----
+            wan_match = re.match(
+                r'([\d.]+)\s*[-~至到]\s*([\d.]+)\s*万',
+                salary_desc,
+            )
+            if wan_match:
+                min_val = int(float(wan_match.group(1)) * 10000)
+                max_val = int(float(wan_match.group(2)) * 10000)
+                # 如果有年终奖，折算到月薪
+                if annual_months and annual_months > 12:
+                    min_val = round(min_val * annual_months / 12)
+                    max_val = round(max_val * annual_months / 12)
+                return min_val, max_val
+
+            # ---- K/千单位：XK-YK 或 XK-YK/月 ----
+            k_match = re.match(
+                r'([\d.]+)\s*[kK千]\s*[-~至到]\s*([\d.]+)\s*[kK千]',
+                salary_desc,
+            )
+            if k_match:
+                min_val = int(float(k_match.group(1)) * 1000)
+                max_val = int(float(k_match.group(2)) * 1000)
+                return min_val, max_val
+
+            # ---- 元/月：X-Y元/月 或 X-Y元 ----
+            yuan_month_match = re.match(
+                r'([\d.]+)\s*[-~至到]\s*([\d.]+)\s*元(?:\s*/\s*月)?',
+                salary_desc,
+            )
+            if yuan_month_match:
+                min_val = int(float(yuan_month_match.group(1)))
+                max_val = int(float(yuan_month_match.group(2)))
+                return min_val, max_val
+
+            # ---- 纯数字范围：X-Y（无单位，默认元/月） ----
+            pure_match = re.match(
+                r'([\d.]+)\s*[-~至到]\s*([\d.]+)',
+                salary_desc,
+            )
+            if pure_match:
+                min_val = float(pure_match.group(1))
+                max_val = float(pure_match.group(2))
                 # 如果值小于100，认为是K单位
                 if min_val < 100:
-                    min_val *= 1000
-                if max_val < 100:
-                    max_val *= 1000
+                    min_val = int(min_val * 1000)
+                    max_val = int(max_val * 1000)
+                else:
+                    min_val = int(min_val)
+                    max_val = int(max_val)
                 return min_val, max_val
+
+            # ---- 单一数值：X元/月 / XK / X万 ----
+            single_yuan = re.match(r'([\d.]+)\s*元(?:\s*/\s*月)?', salary_desc)
+            if single_yuan:
+                val = int(float(single_yuan.group(1)))
+                return val, val
+
+            single_k = re.match(r'([\d.]+)\s*[kK千]', salary_desc)
+            if single_k:
+                val = int(float(single_k.group(1)) * 1000)
+                return val, val
+
+            single_wan = re.match(r'([\d.]+)\s*万', salary_desc)
+            if single_wan:
+                val = int(float(single_wan.group(1)) * 10000)
+                return val, val
+
         except (ValueError, AttributeError):
             pass
 
@@ -137,11 +242,15 @@ class XiaoyuanCsvPipeline:
 
     def process_item(self, item):
         import csv
+        from get_job.items import XiaoyuanJobItem
+
         adapter = ItemAdapter(item)
         data = dict(adapter)
 
         if not self.headers_written:
-            self.writer = csv.DictWriter(self.file, fieldnames=data.keys())
+            # 使用 Item 类定义的所有字段作为 fieldnames，确保所有字段都有列
+            all_fields = list(XiaoyuanJobItem.fields.keys())
+            self.writer = csv.DictWriter(self.file, fieldnames=all_fields, extrasaction='ignore')
             self.writer.writeheader()
             self.headers_written = True
 

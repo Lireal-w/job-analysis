@@ -30,7 +30,9 @@ class LogFileExtension:
     def from_crawler(cls, crawler):
         log_file_path = os.getenv("LOG_FILE_PATH", None)
         if not log_file_path:
-            return None
+            # 返回一个不添加 FileHandler 的空实例，避免 Scrapy 报错
+            ext = cls(None)
+            return ext
 
         ext = cls(log_file_path)
 

@@ -224,22 +224,41 @@ class DrissionPageCookieMiddleware:
         if any(keyword in url_lower for keyword in ("login", "passport", "signin")):
             return True
 
-        # 检查页面 title 是否包含登录相关文字
-        page_title = response.css("title::text").get("")
-        if any(keyword in page_title for keyword in ("用户登录", "登录", "Login", "Sign In")):
-            return True
+        # JSON 响应不需要检查 HTML 登录页面
+        content_type = response.headers.get(b"Content-Type", b"").decode("utf-8", errors="ignore").lower()
+        if "json" in content_type:
+            # 对 JSON 响应，检查是否返回了未登录的错误码
+            try:
+                import json
+                data = json.loads(response.text)
+                # 检查常见的未登录状态码
+                status_code = data.get("statusCode", 0)
+                if status_code in (401, 403):
+                    return True
+            except (json.JSONDecodeError, TypeError):
+                pass
+            return False
 
-        # 检查页面是否存在登录表单组件
-        login_indicators = [
-            'div[class*="login-box"]',
-            'div[id*="passport"]',
-            'div[id*="login"]',
-            'form[action*="login"]',
-            'input[name*="password"]',
-        ]
-        for selector in login_indicators:
-            if response.css(selector):
+        # 非 JSON 响应：检查页面 title 是否包含登录相关文字
+        try:
+            page_title = response.css("title::text").get("")
+            if any(keyword in page_title for keyword in ("用户登录", "登录", "Login", "Sign In")):
                 return True
+
+            # 检查页面是否存在登录表单组件
+            login_indicators = [
+                'div[class*="login-box"]',
+                'div[id*="passport"]',
+                'div[id*="login"]',
+                'form[action*="login"]',
+                'input[name*="password"]',
+            ]
+            for selector in login_indicators:
+                if response.css(selector):
+                    return True
+        except ValueError:
+            # 响应类型不支持 CSS 选择器（如 JSON 响应被错误识别为 HTML）
+            pass
 
         return False
 

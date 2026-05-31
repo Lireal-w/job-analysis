@@ -5,41 +5,48 @@
 工作流程：
 1. Spider 启动时，DrissionPageCookieMiddleware 会自动启动浏览器登录获取 Cookie
 2. 使用获取到的 Cookie 发起请求，爬取职位列表页
-3. 解析职位列表，提取职位详情链接
-4. 访问职位详情页，提取完整职位信息
-5. 访问公司详情页，提取公司信息
+3. 第一页从 SSR 数据提取，第二页起通过 API POST 请求获取
+4. 解析职位列表，提取职位详情链接
+5. 访问职位详情页，提取完整职位信息
 6. 数据通过 Pipeline 进行清洗、去重和存储
 """
 
-import json
 import logging
-import os
-import re
-from datetime import datetime
-from urllib.parse import urljoin, urlencode
-from typing import Dict, List, Tuple
+from urllib.parse import urlencode
+from typing import List, Tuple
 
 import scrapy
-from scrapy.http import Request, Response
+from scrapy.http import Request
 
 from get_job.items import XiaoyuanJobItem, XiaoyuanCompanyItem
 from get_job.region import (
-    RegionStrategyFactory,
     XIAOYUAN_REGION_TABLE,
     create_xiaoyuan_region_factory,
     get_search_keywords_from_env,
     get_target_regions_from_env,
     get_max_page_from_env,
 )
+from get_job.spiders.xiaoyuan_parsers import (
+    JobListParserMixin,
+    ApiParserMixin,
+    JobDetailParserMixin,
+    CompanyDetailParserMixin,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class XiaoyuanSpider(scrapy.Spider):
+class XiaoyuanSpider(
+    JobListParserMixin,
+    ApiParserMixin,
+    JobDetailParserMixin,
+    CompanyDetailParserMixin,
+    scrapy.Spider,
+):
     """智联校园招聘爬虫"""
 
     name = "xiaoyuan"
-    allowed_domains = ["xiaoyuan.zhaopin.com", "zhaopin.com"]
+    allowed_domains = ["xiaoyuan.zhaopin.com", "zhaopin.com", "cgate.zhaopin.com"]
     start_urls = ["https://xiaoyuan.zhaopin.com/search/index"]
 
     # 自定义设置
@@ -70,7 +77,8 @@ class XiaoyuanSpider(scrapy.Spider):
     # 搜索页 URL
     SEARCH_URL = "https://xiaoyuan.zhaopin.com/search/index"
 
-    # 职位详情页 URL 模板
+    # 职位搜索 API URL（第2页起使用）
+    SEARCH_API_URL = "https://cgate.zhaopin.com/positionbusiness/searchrecommend/searchPositions"
 
     # 公司详情页 URL 模板
     COMPANY_DETAIL_URL = "https://www.zhaopin.com/companydetail/{company_id}"
@@ -102,23 +110,14 @@ class XiaoyuanSpider(scrapy.Spider):
         Returns:
             bool: 是否已登录
         """
-        # 登录检测用的 XPath（仅在此方法中使用）
         LOGGED_IN_XPATH = "//div[@class='user-info']//img[@class='avatar']/@src"
-        
+
         try:
-            # 检查已登录用户头像（精确 XPath）
-            avatar_src = page.ele(
-                f"xpath:{LOGGED_IN_XPATH}",
-                timeout=3,
-            )
+            avatar_src = page.ele(f"xpath:{LOGGED_IN_XPATH}", timeout=3)
             if avatar_src:
                 return True
 
-            # 备用检查：用户信息区域
-            user_info = page.ele(
-                "xpath://div[@class='user-info']",
-                timeout=3,
-            )
+            user_info = page.ele("xpath://div[@class='user-info']", timeout=3)
             if user_info:
                 return True
 
@@ -170,6 +169,7 @@ class XiaoyuanSpider(scrapy.Spider):
     def parse(self, response):
         """
         解析首页，验证 Cookie 后开始搜索职位
+        第一页使用 SSR 页面请求，第二页起使用 API POST 请求
         """
         logger.info(f"首页响应状态码: {response.status}")
         logger.info(f"首页 URL: {response.url}")
@@ -182,54 +182,53 @@ class XiaoyuanSpider(scrapy.Spider):
         # Cookie 有效，开始搜索职位
         for keyword in self.search_keywords:
             for region_name, region_id in self.target_regions:
-                for page in range(1, self.max_page + 1):
-                    url = self._build_search_url(keyword, region_id, page)
-                    yield Request(
-                        url=url,
-                        callback=self.parse_job_list,
-                        meta={
-                            "keyword": keyword,
-                            "region_name": region_name,
-                            "region_id": region_id,
-                            "page": page,
-                        },
-                        dont_filter=True,
-                    )
+                # 第一页：使用 SSR 页面请求
+                url = self._build_search_url(keyword, region_id, 1)
+                yield Request(
+                    url=url,
+                    callback=self.parse_job_list,
+                    meta={
+                        "keyword": keyword,
+                        "region_name": region_name,
+                        "region_id": region_id,
+                        "page": 1,
+                    },
+                    dont_filter=True,
+                )
 
     @staticmethod
     def _is_login_required(response) -> bool:
         """
         检测响应是否为登录页面（Cookie 已失效）
 
-        智联校园招聘在 Cookie 失效时，可能：
-        1. 302 重定向到登录页（URL 包含 login/passport）
-        2. 返回 200 但页面内容是登录页（title 包含 "用户登录"）
-        3. 返回 200 但页面内容是登录表单
-
         Returns:
             bool: 是否需要重新登录
         """
         # 方式1：检查 URL 是否包含登录相关路径
         url_lower = response.url.lower()
-        if any(keyword in url_lower for keyword in ("login", "passport", "signin")):
+        if any(kw in url_lower for kw in ("login", "passport", "signin")):
             return True
 
         # 方式2：检查页面 title 是否包含登录相关文字
-        page_title = response.css("title::text").get("")
-        if any(keyword in page_title for keyword in ("用户登录", "登录", "Login", "Sign In")):
-            return True
-
-        # 方式3：检查页面是否存在登录表单组件
-        login_indicators = [
-            'div[class*="login-box"]',
-            'div[id*="passport"]',
-            'div[id*="login"]',
-            'form[action*="login"]',
-            'input[name*="password"]',
-        ]
-        for selector in login_indicators:
-            if response.css(selector):
+        try:
+            page_title = response.css("title::text").get("")
+            if any(kw in page_title for kw in ("用户登录", "登录", "Login", "Sign In")):
                 return True
+
+            # 方式3：检查页面是否存在登录表单组件
+            login_indicators = [
+                'div[class*="login-box"]',
+                'div[id*="passport"]',
+                'div[id*="login"]',
+                'form[action*="login"]',
+                'input[name*="password"]',
+            ]
+            for selector in login_indicators:
+                if response.css(selector):
+                    return True
+        except ValueError:
+            # JSON 响应不支持 CSS 选择器
+            pass
 
         return False
 
@@ -238,516 +237,11 @@ class XiaoyuanSpider(scrapy.Spider):
         构建搜索 URL
 
         智联校园招聘的搜索 URL 格式：
-        https://xiaoyuan.zhaopin.com/search/index?keyword=Python&city=530&page=1
-
-        支持参数：keyword, city, salary, experience, education, page
+        https://xiaoyuan.zhaopin.com/search/index?keyword=Python&city=530&pageIndex=1
         """
         params = {
             "keyword": keyword,
             "city": region_id,
-            "page": page,
+            "pageIndex": page,
         }
         return f"{self.SEARCH_URL}?{urlencode(params)}"
-
-    # ==========================================
-    # 搜索页解析
-    # ==========================================
-
-    def parse_job_list(self, response):
-        """
-        解析职位列表页（搜索页）
-        智联校园招聘使用 Vue SSR，职位数据内嵌在 window.__INITIAL_DATA__ 中。
-        优先从 SSR 数据提取，回退到 CSS 选择器。
-        """
-        keyword = response.meta.get("keyword", "")
-        region_name = response.meta.get("region_name", "")
-        region_id = response.meta.get("region_id", 0)
-        page = response.meta.get("page", 1)
-
-        logger.info(f"正在解析职位列表 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
-
-        # 检查是否被重定向到登录页面
-        if self._is_login_required(response):
-            logger.warning(f"职位列表页返回登录页面 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
-            return
-
-        # 优先从 SSR 内嵌数据提取（Vue SSR 页面数据在 window.__INITIAL_DATA__ 中）
-        ssr_data = self._extract_ssr_data(response)
-        if ssr_data:
-            yield from self._parse_ssr_job_list(ssr_data, keyword, region_name)
-            return
-
-        # 尝试解析纯 JSON 响应（API 接口返回）
-        try:
-            json_data = json.loads(response.text)
-            if isinstance(json_data, dict):
-                yield from self._parse_json_job_list(json_data, keyword, region_name)
-                return
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        # 回退：解析 HTML 响应 - 使用 CSS 选择器
-        sel = self.SEARCH_SELECTORS
-        job_items = response.css(sel["job_item"])
-
-        if not job_items:
-            logger.warning(f"未找到职位列表项 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
-            self._save_debug_page(response, f"job_list_{keyword}_{region_name}_{page}")
-            return
-
-        logger.info(f"找到 {len(job_items)} 个职位项 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
-
-        for job_item in job_items:
-            # 提取职位详情链接
-            detail_link = job_item.css(f'{sel["job_link"]}::attr(href)').get()
-            if not detail_link:
-                continue
-
-            detail_url = urljoin(response.url, detail_link)
-
-            # 从搜索页提取基本信息
-            item = XiaoyuanJobItem()
-
-            # 搜索页数据字段
-            item["job_title"] = job_item.css(f'{sel["job_title"]}::text').get("").strip()
-            item["company_name"] = job_item.css(f'{sel["company_name"]}::text').get("").strip()
-            item["salary_desc"] = job_item.css(f'{sel["salary"]}::text').get("").strip()
-            item["work_city"] = job_item.css(f'{sel["location"]}::text').get("").strip() or region_name
-            item["publish_date"] = job_item.css(f'{sel["publish_time"]}::text').get("").strip()
-            item["education"] = job_item.css(f'{sel["education"]}::text').get("").strip()
-            item["experience"] = job_item.css(f'{sel["experience"]}::text').get("").strip()
-            item["source_url"] = detail_url
-
-            # 从详情页 URL 提取 job_id
-            job_id_match = re.search(r'/(\d+)', detail_link)
-            if job_id_match:
-                item["job_id"] = job_id_match.group(1)
-
-            yield Request(
-                url=detail_url,
-                callback=self.parse_job_detail,
-                meta={"item": item, "keyword": keyword, "region_name": region_name, "region_id": region_id},
-                dont_filter=True,
-            )
-
-    @staticmethod
-    def _extract_ssr_data(response) -> dict:
-        """
-        从 Vue SSR 页面提取 window.__INITIAL_DATA__ 数据
-
-        智联校园招聘使用 Vue SSR，职位数据内嵌在 HTML 的 script 标签中：
-        <script>window.__INITIAL_DATA__ = {...}</script>
-
-        Returns:
-            解析后的字典数据，提取失败返回 None
-        """
-        # 从完整响应文本中提取 window.__INITIAL_DATA__ = {...};
-        # 使用括号平衡匹配来正确提取嵌套 JSON
-        match = re.search(
-            r"window\.__INITIAL_DATA__\s*=\s*",
-            response.text,
-        )
-        if match:
-            # 找到起始位置后，使用括号平衡法提取完整 JSON
-            start = match.end()
-            json_str = response.text[start:]
-            # 找到 JSON 的结束位置（括号平衡）
-            brace_count = 0
-            end = -1
-            for i, ch in enumerate(json_str):
-                if ch == "{":
-                    brace_count += 1
-                elif ch == "}":
-                    brace_count -= 1
-                    if brace_count == 0:
-                        end = i + 1
-                        break
-            if end > 0:
-                json_str = json_str[:end]
-                try:
-                    data = json.loads(json_str)
-                    logger.info(f"成功提取 SSR 内嵌数据，键: {list(data.keys())}")
-                    return data
-                except json.JSONDecodeError as e:
-                    logger.warning(f"解析 SSR 内嵌数据失败: {e}")
-
-        return None
-
-    def _parse_ssr_job_list(self, ssr_data: dict, keyword: str, region_name: str):
-        """
-        解析 Vue SSR 内嵌的职位列表数据
-
-        数据路径: ssr_data -> position -> positionState -> list
-        每个职位项包含完整的职位、公司、薪资等信息。
-        """
-        # 提取职位列表
-        position_data = ssr_data.get("position", {})
-        position_state = position_data.get("positionState", {})
-        job_list = position_state.get("list", [])
-
-        if not job_list:
-            logger.warning(f"SSR 数据中未找到职位列表 - 关键词: {keyword}, 地区: {region_name}")
-            return
-
-        logger.info(f"SSR 数据中找到 {len(job_list)} 个职位 - 关键词: {keyword}, 地区: {region_name}")
-
-        for job in job_list:
-            item = XiaoyuanJobItem()
-
-            # 基本信息
-            item["job_id"] = str(job.get("jobId", ""))
-            item["job_title"] = job.get("name", "")
-            item["job_category"] = job.get("subJobTypeLevelName", "")
-
-            # 公司信息
-            item["company_name"] = job.get("companyName", "")
-            item["company_id"] = job.get("companyNumber", "")
-            item["company_type"] = job.get("property", "")
-            item["company_scale"] = job.get("companySize", "")
-            item["company_industry"] = job.get("industryName", "")
-
-            # 薪资与地点
-            item["salary_desc"] = job.get("salary60", "") or job.get("salaryReal", "")
-            item["work_city"] = job.get("workCity", region_name)
-            item["work_district"] = job.get("cityDistrict", "")
-
-            # 职位详情
-            item["education"] = job.get("education", "")
-            item["experience"] = job.get("workingExp", "")
-            item["welfare"] = " | ".join(job.get("welfareLabel", []))
-            item["publish_date"] = job.get("publishTime", "")
-            item["recruit_num"] = job.get("recruitNumber", None)
-
-            # 从 campusJobDetail 提取更详细信息
-            campus_detail = job.get("campusJobDetail", {})
-            if campus_detail:
-                if not item["company_scale"]:
-                    item["company_scale"] = campus_detail.get("orgSizeName", "")
-                if not item["company_type"]:
-                    item["company_type"] = campus_detail.get("orgTypeName", "")
-                if not item["company_industry"]:
-                    item["company_industry"] = campus_detail.get("industryName", "")
-
-            # 从 jobDetailData.position 提取更详细信息
-            job_detail = job.get("jobDetailData", {})
-            if job_detail:
-                position_detail = job_detail.get("position", {})
-                if position_detail:
-                    base = position_detail.get("base", {})
-                    if base:
-                        if not item["salary_desc"]:
-                            item["salary_desc"] = base.get("salary", "")
-                        if not item["education"]:
-                            item["education"] = base.get("education", "")
-                        if not item["experience"]:
-                            item["experience"] = base.get("positionWorkingExp", "")
-                        item["job_type"] = base.get("workType", "")
-
-                    desc = position_detail.get("desc", {})
-                    if desc:
-                        item["job_description"] = desc.get("description", "")
-                        item["welfare"] = " | ".join(desc.get("welfareTags", [])) or item.get("welfare", "")
-
-                    work_loc = position_detail.get("workLocation", {})
-                    if work_loc:
-                        item["work_address"] = work_loc.get("address", "")
-                        if not item["work_city"]:
-                            item["work_city"] = work_loc.get("positionCityId", region_name)
-
-            # 构建详情页 URL
-            job_number = job.get("number", "")
-            if job_number:
-                item["source_url"] = f"https://xiaoyuan.zhaopin.com/position/{job_number}"
-            else:
-                item["source_url"] = ""
-
-            item["source_platform"] = "智联校园招聘"
-
-            yield item
-
-    def _parse_json_job_list(self, json_data: dict, keyword: str, region_name: str):
-        """解析 JSON 格式的职位列表"""
-        job_list = json_data.get("data", {}).get("list", [])
-        if not job_list:
-            job_list = json_data.get("data", {}).get("result", [])
-        if not job_list:
-            job_list = json_data.get("resultList", [])
-
-        for job in job_list:
-            item = XiaoyuanJobItem()
-
-            # 从 JSON 中提取字段
-            item["job_id"] = str(job.get("jobId", job.get("id", "")))
-            item["job_title"] = job.get("jobName", job.get("title", job.get("positionName", "")))
-            item["job_category"] = job.get("jobCategory", job.get("category", ""))
-            item["company_id"] = str(job.get("companyId", job.get("corpId", "")))
-            item["company_name"] = job.get("companyName", job.get("corpName", job.get("company", "")))
-            item["company_type"] = job.get("companyType", job.get("corpType", ""))
-            item["company_scale"] = job.get("companyScale", job.get("corpScale", ""))
-            item["company_industry"] = job.get("industry", job.get("companyIndustry", ""))
-            item["salary_desc"] = job.get("salary", job.get("salaryDesc", ""))
-            item["salary_min"] = job.get("salaryMin", None)
-            item["salary_max"] = job.get("salaryMax", None)
-            item["work_city"] = job.get("city", job.get("workCity", region_name))
-            item["work_district"] = job.get("district", job.get("workDistrict", ""))
-            item["education"] = job.get("education", job.get("eduLevel", ""))
-            item["experience"] = job.get("experience", job.get("workExp", ""))
-            item["welfare"] = job.get("welfare", job.get("benefit", ""))
-            item["publish_date"] = job.get("publishDate", job.get("createTime", ""))
-            item["recruit_num"] = job.get("recruitNum", job.get("hireNum", ""))
-
-            # 构建详情页 URL
-            job_id = item["job_id"]
-            if job_id:
-                detail_url = f"https://www.zhaopin.com/companydetail/{job_id}"
-                item["source_url"] = detail_url
-
-                yield Request(
-                    url=detail_url,
-                    callback=self.parse_job_detail,
-                    meta={"item": item, "keyword": keyword, "region_name": region_name},
-                    dont_filter=True,
-                )
-            else:
-                item["source_url"] = ""
-                item["source_platform"] = "智联校园招聘"
-                yield item
-
-    # ==========================================
-    # 职位详情页解析
-    # ==========================================
-
-    def parse_job_detail(self, response):
-        """
-        解析职位详情页
-        使用精确 CSS 选择器提取职位详情页数据字段
-        """
-        # 职位详情页选择器（仅在此方法中使用）
-        JOB_DETAIL_SELECTORS = {
-            "job_title": "h1.job-title",
-            "salary": "div.job-info span.salary",
-            "location": "div.job-info span.location",
-            "experience": "div.job-info span.experience",
-            "education": "div.job-info span.education",
-            "company_name": "div.company-info a.company-name",
-            "company_scale": "div.company-info span.scale",
-            "company_industry": "div.company-info span.industry",
-            "job_description": "div.job-description",
-            "job_requirements": "div.job-requirements",
-            "welfare": "div.job-welfare span",
-        }
-        
-        item = response.meta.get("item", XiaoyuanJobItem())
-        keyword = response.meta.get("keyword", "")
-        region_name = response.meta.get("region_name", "")
-
-        logger.info(f"正在解析职位详情 - {item.get('job_title', 'Unknown')}")
-
-        sel = JOB_DETAIL_SELECTORS
-
-        # 职位ID（从 URL 提取）
-        if not item.get("job_id"):
-            match = re.search(r'/companydetail/(\d+)', response.url)
-            item["job_id"] = match.group(1) if match else ""
-
-        # 职位名称
-        if not item.get("job_title"):
-            item["job_title"] = response.css(f'{sel["job_title"]}::text').get("").strip()
-
-        # 薪资范围
-        if not item.get("salary_desc"):
-            item["salary_desc"] = response.css(f'{sel["salary"]}::text').get("").strip()
-
-        # 工作地点
-        if not item.get("work_city"):
-            item["work_city"] = response.css(f'{sel["location"]}::text').get("").strip()
-
-        # 工作经验
-        if not item.get("experience"):
-            item["experience"] = response.css(f'{sel["experience"]}::text').get("").strip()
-
-        # 学历要求
-        if not item.get("education"):
-            item["education"] = response.css(f'{sel["education"]}::text').get("").strip()
-
-        # 公司名称
-        if not item.get("company_name"):
-            item["company_name"] = response.css(f'{sel["company_name"]}::text').get("").strip()
-
-        # 公司规模
-        if not item.get("company_scale"):
-            item["company_scale"] = response.css(f'{sel["company_scale"]}::text').get("").strip()
-
-        # 行业领域
-        if not item.get("company_industry"):
-            item["company_industry"] = response.css(f'{sel["company_industry"]}::text').get("").strip()
-
-        # 职位描述（提取完整文本，包含子元素）
-        job_desc = response.css(sel["job_description"])
-        if job_desc:
-            item["job_description"] = self._extract_full_text(job_desc)
-        else:
-            item["job_description"] = ""
-
-        # 任职要求（提取完整文本，包含子元素）
-        job_req = response.css(sel["job_requirements"])
-        if job_req:
-            item["job_requirement"] = self._extract_full_text(job_req)
-        else:
-            item["job_requirement"] = ""
-
-        # 福利待遇（多个 span 标签）
-        if not item.get("welfare"):
-            welfare_items = response.css(f'{sel["welfare"]}::text').getall()
-            item["welfare"] = " | ".join([w.strip() for w in welfare_items if w.strip()])
-
-        # 工作地址（详情页可能有更详细的地址）
-        if not item.get("work_address"):
-            item["work_address"] = response.css(f'{sel["location"]}::text').get("").strip()
-
-        # 设置来源 URL
-        item["source_url"] = response.url
-        item["source_platform"] = "智联校园招聘"
-
-        yield item
-
-        # 提取公司详情链接，爬取公司信息
-        company_url = response.css(f'{sel["company_name"]}::attr(href)').get()
-        if not company_url:
-            # 尝试从公司 ID 构建 URL
-            if item.get("company_id"):
-                company_url = self.COMPANY_DETAIL_URL.format(company_id=item["company_id"])
-
-        if company_url:
-            company_url = urljoin(response.url, company_url)
-            yield Request(
-                url=company_url,
-                callback=self.parse_company_detail,
-                meta={"region_name": region_name, "company_name": item.get("company_name", "")},
-                dont_filter=True,
-            )
-
-    # ==========================================
-    # 公司详情页解析
-    # ==========================================
-
-    def parse_company_detail(self, response):
-        """
-        解析公司详情页
-        使用精确 CSS 选择器提取公司详情页数据字段
-        """
-        # 公司详情页选择器（仅在此方法中使用）
-        COMPANY_DETAIL_SELECTORS = {
-            "company_name": "h1.company-name",
-            "company_logo": "div.company-header img.logo",
-            "company_scale": "div.company-info span.scale",
-            "company_founded": "div.company-info span.founded",
-            "company_industry": "div.company-info span.industry",
-            "company_address": "div.company-info span.address",
-            "company_description": "div.company-description",
-            "job_list": "div.job-list div.job-item",
-        }
-        
-        item = XiaoyuanCompanyItem()
-
-        sel = COMPANY_DETAIL_SELECTORS
-
-        # 公司ID（从 URL 提取）
-        match = re.search(r'/companydetail/(\d+)', response.url)
-        item["company_id"] = match.group(1) if match else ""
-
-        # 公司名称
-        item["company_name"] = response.css(f'{sel["company_name"]}::text').get("").strip()
-
-        # 公司Logo
-        item["company_logo"] = response.css(f'{sel["company_logo"]}::attr(src)').get("")
-
-        # 公司规模
-        item["company_scale"] = response.css(f'{sel["company_scale"]}::text').get("").strip()
-
-        # 公司类型
-        item["company_type"] = ""
-
-        # 行业领域
-        item["company_industry"] = response.css(f'{sel["company_industry"]}::text').get("").strip()
-
-        # 公司地址
-        item["company_address"] = response.css(f'{sel["company_address"]}::text').get("").strip()
-
-        # 公司简介（提取完整文本，包含子元素）
-        company_desc = response.css(sel["company_description"])
-        if company_desc:
-            item["company_description"] = self._extract_full_text(company_desc)
-        else:
-            item["company_description"] = ""
-
-        # 公司简称
-        item["company_short_name"] = ""
-
-        # 公司网站
-        item["company_website"] = response.css(
-            'a[class*="website"]::attr(href), '
-            'a[class*="url"]::attr(href)'
-        ).get("")
-
-        # 元数据
-        item["source_url"] = response.url
-        item["source_platform"] = "智联校园招聘"
-
-        yield item
-
-        # 解析在招职位列表
-        job_items = response.css(sel["job_list"])
-        if job_items:
-            search_sel = self.SEARCH_SELECTORS
-            for job_item in job_items:
-                detail_link = job_item.css(f'{search_sel["job_link"]}::attr(href)').get()
-                if not detail_link:
-                    continue
-
-                detail_url = urljoin(response.url, detail_link)
-
-                job = XiaoyuanJobItem()
-                job["job_title"] = job_item.css(f'{search_sel["job_title"]}::text').get("").strip()
-                job["company_name"] = item.get("company_name", "")
-                job["company_id"] = item.get("company_id", "")
-                job["salary_desc"] = job_item.css(f'{search_sel["salary"]}::text').get("").strip()
-                job["work_city"] = response.meta.get("region_name", "")
-                job["source_url"] = detail_url
-
-                job_id_match = re.search(r'/(\d+)', detail_link)
-                if job_id_match:
-                    job["job_id"] = job_id_match.group(1)
-
-                yield Request(
-                    url=detail_url,
-                    callback=self.parse_job_detail,
-                    meta={"item": job, "keyword": "", "region_name": response.meta.get("region_name", "")},
-                    dont_filter=True,
-                )
-
-    # ==========================================
-    # 工具方法
-    # ==========================================
-
-    @staticmethod
-    def _extract_full_text(element) -> str:
-        """
-        提取元素及其所有子元素的文本内容，并清理多余空白
-        """
-        texts = element.css('*::text').getall()
-        combined = " ".join([t.strip() for t in texts if t.strip()])
-        return re.sub(r'\s+', ' ', combined)
-
-    @staticmethod
-    def _save_debug_page(response, filename: str):
-        """保存页面用于调试"""
-        try:
-            output_dir = "debug_pages"
-            os.makedirs(output_dir, exist_ok=True)
-            filepath = os.path.join(output_dir, f"{filename}.html")
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(response.text)
-            logger.info(f"调试页面已保存: {filepath}")
-        except Exception as e:
-            logger.error(f"保存调试页面失败: {e}")

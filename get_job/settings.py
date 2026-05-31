@@ -70,7 +70,7 @@ REQUEST_DEBUG_DIR = "debug_requests"
 # Enable or disable extensions
 EXTENSIONS = {
     # 日志文件扩展：在 Scrapy 日志配置完成后添加 FileHandler，使日志同时输出到控制台和 main.log
-    # "get_job.extensions.LogFileExtension": 100,
+    "get_job.extensions.LogFileExtension": 100,
 }
 
 # Configure item pipelines
