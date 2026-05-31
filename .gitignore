@@ -45,6 +45,8 @@ coverage.xml
 # Output files
 output/
 debug_pages/
+debug_requests/
+main.log
 
 # Cache directory (browser profiles, etc.)
 .cache/

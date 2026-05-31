@@ -29,7 +29,33 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 将项目根目录添加到 Python 路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_ROOT)
+
+# 日志文件路径
+LOG_FILE = os.path.join(PROJECT_ROOT, "main.log")
+
+
+def setup_file_logging():
+    """配置日志同时输出到控制台和 main.log 文件"""
+    log_format = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+
+    # 获取根日志器
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # 控制台 Handler
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    root_logger.addHandler(console_handler)
+
+    # 文件 Handler
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(log_format, date_format))
+    root_logger.addHandler(file_handler)
 
 
 def main():
@@ -43,39 +69,34 @@ def main():
 
     args = parser.parse_args()
 
-    # 配置日志
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    logger = logging.getLogger(__name__)
-
     # 仅登录模式
     if args.login_only:
-        logger.info("仅登录模式：启动浏览器池获取Cookie...")
-        from get_job.spiders.xiaoyuan_spider import XiaoyuanSpider
-        from get_job.utils.browser_pool import BrowserPool
-        from get_job.utils.drissionpage_login import refresh_cookie_via_browser
+        setup_file_logging()
+        logger = logging.getLogger(__name__)
+
+        logger.info("仅登录模式：启动浏览器获取Cookie...")
+        from get_job.utils.drissionpage_login import get_cookies_with_login
         from get_job.utils.redis_helper import close_redis_client
-        pool = None
+        from get_job.spiders.xiaoyuan_spider import XiaoyuanSpider
         try:
-            pool = BrowserPool(pool_size=1, headless=False)
-            cookies = refresh_cookie_via_browser(
+            cookies = get_cookies_with_login(
                 url=XiaoyuanSpider.site_url,
                 is_logged_in=XiaoyuanSpider.is_logged_in,
-                pool=pool,
-                timeout=120,
+                force_login=True,
             )
             if cookies:
                 logger.info(f"成功获取 {len(cookies)} 个Cookie，已保存到Redis")
             else:
                 logger.error("获取Cookie失败")
+        except Exception as e:
+            logger.error(f"获取Cookie时发生错误：{e}")
         finally:
-            if pool:
-                pool.shutdown()
             close_redis_client()
         return
+
+    # 爬虫模式：通过环境变量传递日志文件路径给 Scrapy Extension
+    # Extension 会在 Scrapy 日志配置完成后再添加 FileHandler
+    os.environ["LOG_FILE_PATH"] = LOG_FILE
 
     # 构建爬虫运行命令
     from scrapy.cmdline import execute
@@ -102,7 +123,6 @@ def main():
     if args.force_login:
         os.environ["FORCE_LOGIN"] = "True"
 
-    logger.info(f"启动爬虫，命令: {' '.join(cmd_args)}")
     execute(cmd_args)
 
 

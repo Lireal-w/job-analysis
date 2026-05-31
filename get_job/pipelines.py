@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class XiaoyuanDataCleanPipeline:
     """数据清洗管道：清理空值、格式化字段"""
 
-    def process_item(self, item, spider):
+    def process_item(self, item):
         adapter = ItemAdapter(item)
 
         # 清理所有字符串字段的空白字符
@@ -93,14 +93,14 @@ class XiaoyuanJsonPipeline:
         self.file = None
         self.items = []
 
-    def open_spider(self, spider):
+    def open_spider(self):
         output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'output')
         os.makedirs(output_dir, exist_ok=True)
         filepath = os.path.join(output_dir, f'xiaoyuan_jobs_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
         self.filepath = filepath
         logger.info(f"JSON 输出文件: {filepath}")
 
-    def close_spider(self, spider):
+    def close_spider(self):
         if self.items:
             with open(self.filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.items, f, ensure_ascii=False, indent=2)
@@ -108,7 +108,7 @@ class XiaoyuanJsonPipeline:
         else:
             logger.warning("没有数据需要保存")
 
-    def process_item(self, item, spider):
+    def process_item(self, item):
         adapter = ItemAdapter(item)
         self.items.append(dict(adapter))
         return item
@@ -122,7 +122,7 @@ class XiaoyuanCsvPipeline:
         self.writer = None
         self.headers_written = False
 
-    def open_spider(self, spider):
+    def open_spider(self):
         output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'output')
         os.makedirs(output_dir, exist_ok=True)
         filepath = os.path.join(output_dir, f'xiaoyuan_jobs_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv')
@@ -130,12 +130,12 @@ class XiaoyuanCsvPipeline:
         self.file = open(filepath, 'w', encoding='utf-8-sig', newline='')
         logger.info(f"CSV 输出文件: {filepath}")
 
-    def close_spider(self, spider):
+    def close_spider(self):
         if self.file:
             self.file.close()
             logger.info(f"CSV 文件已关闭: {self.filepath}")
 
-    def process_item(self, item, spider):
+    def process_item(self, item):
         import csv
         adapter = ItemAdapter(item)
         data = dict(adapter)
@@ -155,7 +155,7 @@ class XiaoyuanDedupPipeline:
     def __init__(self):
         self.seen_ids = set()
 
-    def process_item(self, item, spider):
+    def process_item(self, item):
         adapter = ItemAdapter(item)
         job_id = adapter.get('job_id')
 
@@ -177,7 +177,7 @@ class XiaoyuanMongoPipeline:
         self._job_ids = set()  # 用于单次运行内的去重
         self._company_ids = set()
 
-    def open_spider(self, spider):
+    def open_spider(self):
         """Spider 启动时初始化 MongoDB 连接"""
         from get_job.utils.mongo_helper import (
             get_mongo_client,
@@ -197,7 +197,7 @@ class XiaoyuanMongoPipeline:
             logger.error(f"MongoDB 存储管道初始化失败: {e}")
             raise
 
-    def close_spider(self, spider):
+    def close_spider(self):
         """Spider 关闭时输出统计信息"""
         from get_job.utils.mongo_helper import close_mongo_client, get_collection_count, MONGO_JOB_COLLECTION, MONGO_COMPANY_COLLECTION
 
@@ -213,7 +213,7 @@ class XiaoyuanMongoPipeline:
 
         close_mongo_client()
 
-    def process_item(self, item, spider):
+    def process_item(self, item):
         """根据 Item 类型存储到对应集合"""
         from get_job.items import XiaoyuanJobItem, XiaoyuanCompanyItem
         from get_job.utils.mongo_helper import save_item_to_mongo
@@ -222,14 +222,14 @@ class XiaoyuanMongoPipeline:
         data = dict(adapter)
 
         if isinstance(item, XiaoyuanJobItem):
-            return self._process_job(data, spider)
+            return self._process_job(data)
         elif isinstance(item, XiaoyuanCompanyItem):
-            return self._process_company(data, spider)
+            return self._process_company(data)
         else:
             # 未知类型，尝试按职位处理
-            return self._process_job(data, spider)
+            return self._process_job(data)
 
-    def _process_job(self, data: dict, spider) -> dict:
+    def _process_job(self, data: dict) -> dict:
         """处理职位数据"""
         from get_job.utils.mongo_helper import save_item_to_mongo, MONGO_JOB_COLLECTION
 
@@ -255,7 +255,7 @@ class XiaoyuanMongoPipeline:
 
         return data
 
-    def _process_company(self, data: dict, spider) -> dict:
+    def _process_company(self, data: dict) -> dict:
         """处理公司数据"""
         from get_job.utils.mongo_helper import save_item_to_mongo, MONGO_COMPANY_COLLECTION
 

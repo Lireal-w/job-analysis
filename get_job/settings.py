@@ -58,14 +58,20 @@ DOWNLOADER_MIDDLEWARES = {
     "get_job.middlewares.DrissionPageCookieMiddleware": 100,
     # 随机 User-Agent 中间件
     "get_job.middlewares.RandomUserAgentMiddleware": 400,
+    # 请求调试中间件（保存请求/响应内容到文件，用于排查问题）
+    "get_job.middlewares.RequestDebugMiddleware": 550,
     # 默认下载中间件
     "get_job.middlewares.GetJobDownloaderMiddleware": 543,
 }
 
+# 请求调试输出目录
+REQUEST_DEBUG_DIR = "debug_requests"
+
 # Enable or disable extensions
-#EXTENSIONS = {
-#    "scrapy.extensions.telnet.TelnetConsole": None,
-#}
+EXTENSIONS = {
+    # 日志文件扩展：在 Scrapy 日志配置完成后添加 FileHandler，使日志同时输出到控制台和 main.log
+    # "get_job.extensions.LogFileExtension": 100,
+}
 
 # Configure item pipelines
 ITEM_PIPELINES = {
@@ -136,6 +142,11 @@ COOKIE_EXPIRE_SECONDS = int(os.getenv("COOKIE_EXPIRE_SECONDS", "86400"))
 LOG_LEVEL = "INFO"
 LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
 LOG_DATEFORMAT = "%Y-%m-%d %H:%M:%S"
+
+# 不使用 Scrapy 的 LOG_FILE（会禁止控制台输出）
+# 日志文件写入由 run.py 中的 log_adapter 实现，同时保留控制台输出
+LOG_FILE = None
+LOG_FILE_APPEND = True
 
 # 重试设置
 RETRY_ENABLED = True

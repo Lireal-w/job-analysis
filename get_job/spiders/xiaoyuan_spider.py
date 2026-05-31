@@ -31,10 +31,7 @@ class XiaoyuanSpider(scrapy.Spider):
 
     name = "xiaoyuan"
     allowed_domains = ["xiaoyuan.zhaopin.com", "zhaopin.com"]
-    start_urls = ["https://xiaoyuan.zhaopin.com/"]
-
-    # 网站首页 URL（供 Cookie 刷新使用）
-    site_url = "https://xiaoyuan.zhaopin.com/"
+    start_urls = ["https://xiaoyuan.zhaopin.com/search/index"]
 
     # 自定义设置
     custom_settings = {
@@ -59,16 +56,13 @@ class XiaoyuanSpider(scrapy.Spider):
     SEARCH_URL = "https://xiaoyuan.zhaopin.com/search/index"
 
     # 职位详情页 URL 模板
-    JOB_DETAIL_URL = "https://www.zhaopin.com/companydetail/{job_id}"
 
     # 公司详情页 URL 模板
     COMPANY_DETAIL_URL = "https://www.zhaopin.com/companydetail/{company_id}"
 
     # ==========================================
-    # CSS 选择器配置
+    # 搜索页选择器（被 parse_job_list 和 parse_company_detail 共用）
     # ==========================================
-
-    # 搜索页选择器
     SEARCH_SELECTORS = {
         "job_item": "div.job-item",
         "job_title": "div.job-item h3 a",
@@ -80,36 +74,6 @@ class XiaoyuanSpider(scrapy.Spider):
         "education": "div.job-item span.education",
         "experience": "div.job-item span.experience",
     }
-
-    # 职位详情页选择器
-    JOB_DETAIL_SELECTORS = {
-        "job_title": "h1.job-title",
-        "salary": "div.job-info span.salary",
-        "location": "div.job-info span.location",
-        "experience": "div.job-info span.experience",
-        "education": "div.job-info span.education",
-        "company_name": "div.company-info a.company-name",
-        "company_scale": "div.company-info span.scale",
-        "company_industry": "div.company-info span.industry",
-        "job_description": "div.job-description",
-        "job_requirements": "div.job-requirements",
-        "welfare": "div.job-welfare span",
-    }
-
-    # 公司详情页选择器
-    COMPANY_DETAIL_SELECTORS = {
-        "company_name": "h1.company-name",
-        "company_logo": "div.company-header img.logo",
-        "company_scale": "div.company-info span.scale",
-        "company_founded": "div.company-info span.founded",
-        "company_industry": "div.company-info span.industry",
-        "company_address": "div.company-info span.address",
-        "company_description": "div.company-description",
-        "job_list": "div.job-list div.job-item",
-    }
-
-    # 已登录用户头像 XPath
-    LOGGED_IN_XPATH = "//div[@class='user-info']//img[@class='avatar']/@src"
 
     @staticmethod
     def is_logged_in(page) -> bool:
@@ -123,10 +87,13 @@ class XiaoyuanSpider(scrapy.Spider):
         Returns:
             bool: 是否已登录
         """
+        # 登录检测用的 XPath（仅在此方法中使用）
+        LOGGED_IN_XPATH = "//div[@class='user-info']//img[@class='avatar']/@src"
+        
         try:
             # 检查已登录用户头像（精确 XPath）
             avatar_src = page.ele(
-                "xpath://div[@class='user-info']//img[@class='avatar']/@src",
+                f"xpath:{LOGGED_IN_XPATH}",
                 timeout=3,
             )
             if avatar_src:
@@ -168,6 +135,7 @@ class XiaoyuanSpider(scrapy.Spider):
         生成初始请求
         先访问搜索页确认 Cookie 有效，然后开始搜索职位
         """
+        logger.info(f"开始爬取智联校园招聘职位信息")
         yield Request(
             url=self.SEARCH_URL,
             callback=self.parse_homepage,
@@ -175,7 +143,7 @@ class XiaoyuanSpider(scrapy.Spider):
             meta={"dont_redirect": False},
         )
 
-    def parse_homepage(self, response):
+    def parse(self, response):
         """
         解析首页，验证 Cookie 后开始搜索
         """
@@ -226,15 +194,7 @@ class XiaoyuanSpider(scrapy.Spider):
     def parse_job_list(self, response):
         """
         解析职位列表页（搜索页）
-        使用精确 CSS 选择器提取搜索页数据字段：
-        - 职位名称: div.job-item h3 a
-        - 职位链接: div.job-item h3 a (href)
-        - 公司名称: div.job-item div.company-name
-        - 薪资范围: div.job-item span.salary
-        - 工作地点: div.job-item span.location
-        - 发布时间: div.job-item span.publish-time
-        - 学历要求: div.job-item span.education
-        - 工作经验: div.job-item span.experience
+        使用精确 CSS 选择器提取搜索页数据字段
         """
         keyword = response.meta.get("keyword", "")
         city = response.meta.get("city", "")
@@ -329,7 +289,7 @@ class XiaoyuanSpider(scrapy.Spider):
             # 构建详情页 URL
             job_id = item["job_id"]
             if job_id:
-                detail_url = self.JOB_DETAIL_URL.format(job_id=job_id)
+                detail_url = f"https://www.zhaopin.com/companydetail/{job_id}"
                 item["source_url"] = detail_url
 
                 yield Request(
@@ -350,26 +310,30 @@ class XiaoyuanSpider(scrapy.Spider):
     def parse_job_detail(self, response):
         """
         解析职位详情页
-        使用精确 CSS 选择器提取职位详情页数据字段：
-        - 职位名称: h1.job-title
-        - 薪资范围: div.job-info span.salary
-        - 工作地点: div.job-info span.location
-        - 工作经验: div.job-info span.experience
-        - 学历要求: div.job-info span.education
-        - 公司名称: div.company-info a.company-name
-        - 公司规模: div.company-info span.scale
-        - 行业领域: div.company-info span.industry
-        - 职位描述: div.job-description
-        - 任职要求: div.job-requirements
-        - 福利待遇: div.job-welfare span
+        使用精确 CSS 选择器提取职位详情页数据字段
         """
+        # 职位详情页选择器（仅在此方法中使用）
+        JOB_DETAIL_SELECTORS = {
+            "job_title": "h1.job-title",
+            "salary": "div.job-info span.salary",
+            "location": "div.job-info span.location",
+            "experience": "div.job-info span.experience",
+            "education": "div.job-info span.education",
+            "company_name": "div.company-info a.company-name",
+            "company_scale": "div.company-info span.scale",
+            "company_industry": "div.company-info span.industry",
+            "job_description": "div.job-description",
+            "job_requirements": "div.job-requirements",
+            "welfare": "div.job-welfare span",
+        }
+        
         item = response.meta.get("item", XiaoyuanJobItem())
         keyword = response.meta.get("keyword", "")
         city = response.meta.get("city", "")
 
         logger.info(f"正在解析职位详情 - {item.get('job_title', 'Unknown')}")
 
-        sel = self.JOB_DETAIL_SELECTORS
+        sel = JOB_DETAIL_SELECTORS
 
         # 职位ID（从 URL 提取）
         if not item.get("job_id"):
@@ -460,19 +424,23 @@ class XiaoyuanSpider(scrapy.Spider):
     def parse_company_detail(self, response):
         """
         解析公司详情页
-        使用精确 CSS 选择器提取公司详情页数据字段：
-        - 公司名称: h1.company-name
-        - 公司Logo: div.company-header img.logo
-        - 公司规模: div.company-info span.scale
-        - 成立时间: div.company-info span.founded
-        - 行业领域: div.company-info span.industry
-        - 公司地址: div.company-info span.address
-        - 公司简介: div.company-description
-        - 在招职位: div.job-list div.job-item
+        使用精确 CSS 选择器提取公司详情页数据字段
         """
+        # 公司详情页选择器（仅在此方法中使用）
+        COMPANY_DETAIL_SELECTORS = {
+            "company_name": "h1.company-name",
+            "company_logo": "div.company-header img.logo",
+            "company_scale": "div.company-info span.scale",
+            "company_founded": "div.company-info span.founded",
+            "company_industry": "div.company-info span.industry",
+            "company_address": "div.company-info span.address",
+            "company_description": "div.company-description",
+            "job_list": "div.job-list div.job-item",
+        }
+        
         item = XiaoyuanCompanyItem()
 
-        sel = self.COMPANY_DETAIL_SELECTORS
+        sel = COMPANY_DETAIL_SELECTORS
 
         # 公司ID（从 URL 提取）
         match = re.search(r'/companydetail/(\d+)', response.url)

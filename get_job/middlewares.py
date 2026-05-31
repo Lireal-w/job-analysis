@@ -3,6 +3,8 @@
 # See documentation in:
 # https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+import os
+import time
 import logging
 from scrapy import signals
 
@@ -21,17 +23,18 @@ class GetJobSpiderMiddleware:
     @classmethod
     def from_crawler(cls, crawler):
         s = cls()
+        s._crawler = crawler
         crawler.signals.connect(s.spider_opened, signal=signals.spider_opened)
         return s
 
-    def process_spider_input(self, response, spider):
+    def process_spider_input(self, response):
         return None
 
-    async def process_spider_output(self, response, result, spider):
+    async def process_spider_output(self, response, result):
         async for i in result:
             yield i
 
-    def process_spider_exception(self, response, exception, spider):
+    def process_spider_exception(self, response, exception):
         pass
 
     async def process_start(self, start):
@@ -48,16 +51,17 @@ class GetJobDownloaderMiddleware:
     @classmethod
     def from_crawler(cls, crawler):
         s = cls()
+        s._crawler = crawler
         crawler.signals.connect(s.spider_opened, signal=signals.spider_opened)
         return s
 
-    def process_request(self, request, spider):
+    def process_request(self, request):
         return None
 
-    def process_response(self, request, response, spider):
+    def process_response(self, request, response):
         return response
 
-    def process_exception(self, request, exception, spider):
+    def process_exception(self, request, exception):
         pass
 
     def spider_opened(self, spider):
@@ -67,7 +71,7 @@ class GetJobDownloaderMiddleware:
 class DrissionPageCookieMiddleware:
     """
     DrissionPage Cookie 注入中间件
-    在 Spider 启动时通过浏览器池获取 Cookie，
+    在 from_crawler 阶段通过浏览器池获取 Cookie（确保 start_requests 发出时已有 Cookie），
     然后将 Cookie 注入到每个 Scrapy 请求中。
     Cookie 过期时自动通过浏览器池刷新。
     """
@@ -76,32 +80,45 @@ class DrissionPageCookieMiddleware:
         self.force_login = force_login
         self.cookies = {}
         self.browser_pool = None
+        self.site_url = None
+        self.is_logged_in = None
+        self._spider = None
 
     @classmethod
     def from_crawler(cls, crawler):
         force_login = crawler.settings.getbool("FORCE_LOGIN", False)
         middleware = cls(force_login=force_login)
-        crawler.signals.connect(middleware.spider_opened, signal=signals.spider_opened)
+        # 保存 crawler 引用，以便在需要时获取 spider
+        middleware._crawler = crawler
         crawler.signals.connect(middleware.spider_closed, signal=signals.spider_closed)
         return middleware
 
-    def spider_opened(self, spider):
-        """Spider 启动时获取 Cookie"""
+    def _ensure_cookies(self, spider=None):
+        """确保 Cookie 已获取（懒加载，首次调用时获取）"""
+        if self.cookies:
+            return
+
+        if spider:
+            self._spider = spider
+
+        if not self._spider:
+            return
+
         logger.info("=" * 60)
         logger.info("DrissionPage Cookie 中间件正在初始化...")
         logger.info("=" * 60)
 
         # 从爬虫类获取网站特定的配置
-        self.site_url = getattr(spider, "site_url", None)
-        self.is_logged_in = getattr(spider, "is_logged_in", None)
+        self.site_url = getattr(self._spider, "site_url", None)
+        self.is_logged_in = getattr(self._spider, "is_logged_in", None)
 
         if not self.site_url:
-            logger.warning(f"爬虫 {spider.name} 未定义 site_url，无法自动刷新 Cookie")
+            logger.warning(f"爬虫 {self._spider.name} 未定义 site_url，无法自动刷新 Cookie")
         if not self.is_logged_in:
-            logger.warning(f"爬虫 {spider.name} 未定义 is_logged_in 方法，无法自动检测登录状态")
+            logger.warning(f"爬虫 {self._spider.name} 未定义 is_logged_in 方法，无法自动检测登录状态")
 
         # 初始化浏览器池
-        pool_size = spider.settings.getint("BROWSER_POOL_SIZE", 3)
+        pool_size = self._spider.settings.getint("BROWSER_POOL_SIZE", 3)
         self.browser_pool = get_browser_pool(pool_size=pool_size, headless=False)
 
         logger.info(f"浏览器池已初始化，池大小: {pool_size}")
@@ -132,8 +149,12 @@ class DrissionPageCookieMiddleware:
         shutdown_browser_pool()
         logger.info("浏览器池已关闭")
 
-    def process_request(self, request, spider):
+    def process_request(self, request):
         """在每个请求中注入 Cookie"""
+        # 懒加载：首次请求时确保 Cookie 已获取
+        spider = self._crawler.spider if hasattr(self, '_crawler') else None
+        self._ensure_cookies(spider)
+
         if not self.cookies:
             return None
 
@@ -147,7 +168,7 @@ class DrissionPageCookieMiddleware:
 
         return None
 
-    def process_response(self, request, response, spider):
+    def process_response(self, request, response):
         """处理响应，检测是否需要重新登录"""
         need_refresh = False
 
@@ -184,6 +205,150 @@ class DrissionPageCookieMiddleware:
         return response
 
 
+class RequestDebugMiddleware:
+    """
+    请求调试中间件
+    将所有请求和响应的详细信息保存为文件，用于排查问题。
+    保存内容包括：请求 URL、方法、Headers、Cookie、响应状态码、响应体等。
+    文件保存在 debug_requests/ 目录下。
+    """
+
+    def __init__(self, debug_dir="debug_requests"):
+        self.debug_dir = debug_dir
+        self._request_count = 0
+        self._session_id = time.strftime("%Y%m%d_%H%M%S")
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        debug_dir = crawler.settings.get("REQUEST_DEBUG_DIR", "debug_requests")
+        middleware = cls(debug_dir=debug_dir)
+        return middleware
+
+    def _get_debug_filepath(self, request, response=None):
+        """生成调试文件路径"""
+        self._request_count += 1
+        status_suffix = f"_{response.status}" if response else ""
+        filename = f"{self._request_count:04d}{status_suffix}_{self._session_id}.txt"
+        return os.path.join(self.debug_dir, filename)
+
+    def _save_request_debug(self, request, response=None):
+        """保存请求和响应调试信息到文件"""
+        try:
+            os.makedirs(self.debug_dir, exist_ok=True)
+            filepath = self._get_debug_filepath(request, response)
+
+            lines = []
+            lines.append("=" * 80)
+            lines.append("请求调试信息")
+            lines.append("=" * 80)
+            lines.append("")
+
+            # 请求信息
+            lines.append("【请求信息】")
+            lines.append(f"  URL:        {request.url}")
+            lines.append(f"  方法:       {request.method}")
+            lines.append(f"  Meta:       {dict(request.meta)}")
+            lines.append(f"  Dont Filter: {request.dont_filter}")
+            lines.append("")
+
+            # 请求 Headers
+            lines.append("【请求 Headers】")
+            for key, value in request.headers.items():
+                key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                value_str = value.decode("utf-8") if isinstance(value, bytes) else str(value)
+                # 脱敏 Cookie 中的敏感信息
+                if key_str.lower() == "cookie":
+                    cookie_parts = value_str.split("; ")
+                    masked_parts = []
+                    for part in cookie_parts:
+                        if "=" in part:
+                            k, v = part.split("=", 1)
+                            if len(v) > 8:
+                                masked_parts.append(f"{k}={v[:4]}...{v[-4:]}")
+                            else:
+                                masked_parts.append(f"{k}=****")
+                        else:
+                            masked_parts.append(part)
+                    value_str = "; ".join(masked_parts)
+                lines.append(f"  {key_str}: {value_str}")
+            lines.append("")
+
+            # 请求 Cookies
+            lines.append("【请求 Cookies】")
+            if request.cookies:
+                for name, value in request.cookies.items():
+                    value_str = str(value)
+                    if len(value_str) > 8:
+                        value_str = f"{value_str[:4]}...{value_str[-4:]}"
+                    lines.append(f"  {name}: {value_str}")
+            else:
+                lines.append("  (无)")
+            lines.append("")
+
+            # 响应信息
+            if response:
+                lines.append("【响应信息】")
+                lines.append(f"  状态码:     {response.status}")
+                lines.append(f"  URL:        {response.url}")
+                lines.append(f"  编码:       {response.encoding}")
+                lines.append(f"  Body 长度:  {len(response.body)} bytes")
+                lines.append("")
+
+                # 响应 Headers
+                lines.append("【响应 Headers】")
+                for key, value in response.headers.items():
+                    key_str = key.decode("utf-8") if isinstance(key, bytes) else key
+                    value_str = value.decode("utf-8") if isinstance(value, bytes) else str(value)
+                    lines.append(f"  {key_str}: {value_str}")
+                lines.append("")
+
+                # 响应体（截取前 5000 字符）
+                lines.append("【响应体（前 5000 字符）】")
+                try:
+                    body_text = response.text[:5000]
+                except Exception:
+                    body_text = response.body[:5000].decode("utf-8", errors="replace")
+                lines.append(body_text)
+                if len(response.body) > 5000:
+                    lines.append(f"... (共 {len(response.body)} bytes，已截取前 5000 字符)")
+                lines.append("")
+            else:
+                lines.append("【响应信息】(无响应，请求可能被中间件拦截)")
+                lines.append("")
+
+            lines.append("=" * 80)
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+
+            logger.debug(f"请求调试信息已保存: {filepath}")
+
+        except Exception as e:
+            logger.error(f"保存请求调试信息失败: {e}")
+
+    def process_request(self, request):
+        """记录发出的请求"""
+        # 只记录目标网站的请求，不记录静态资源等
+        if "zhaopin.com" in request.url:
+            logger.info(f"[DEBUG] 请求发出 -> {request.method} {request.url}")
+        return None
+
+    def process_response(self, request, response):
+        """记录收到的响应，并保存完整调试信息"""
+        if "zhaopin.com" in request.url:
+            logger.info(f"[DEBUG] 响应收到 <- {response.status} {request.url} (Body: {len(response.body)} bytes)")
+            # 保存完整调试信息到文件
+            self._save_request_debug(request, response)
+        return response
+
+    def process_exception(self, request, exception):
+        """记录请求异常"""
+        if "zhaopin.com" in request.url:
+            logger.warning(f"[DEBUG] 请求异常 !! {request.method} {request.url} -> {type(exception).__name__}: {exception}")
+            self._save_request_debug(request)
+        return None
+
+
 class RandomUserAgentMiddleware:
     """随机 User-Agent 中间件"""
 
@@ -200,6 +365,6 @@ class RandomUserAgentMiddleware:
         import random
         self._random = random.Random()
 
-    def process_request(self, request, spider):
+    def process_request(self, request):
         ua = self._random.choice(self.USER_AGENTS)
         request.headers.setdefault("User-Agent", ua)
