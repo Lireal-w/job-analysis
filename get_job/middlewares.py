@@ -182,8 +182,12 @@ class DrissionPageCookieMiddleware:
         if response.status in (401, 403):
             need_refresh = True
 
+        # 如果返回200但页面内容是登录页（智联校园招聘常见情况）
+        if response.status == 200 and self._is_login_page(response):
+            need_refresh = True
+
         if need_refresh:
-            logger.warning("检测到 Cookie 过期，通过浏览器池刷新 Cookie...")
+            logger.warning(f"检测到 Cookie 过期（状态码: {response.status}，URL: {response.url}），通过浏览器池刷新 Cookie...")
             # 使用浏览器池刷新 Cookie
             if self.browser_pool and self.site_url:
                 self.cookies = refresh_cookie_via_browser(
@@ -203,6 +207,41 @@ class DrissionPageCookieMiddleware:
                 return request.replace(dont_filter=True)
 
         return response
+
+    @staticmethod
+    def _is_login_page(response) -> bool:
+        """
+        检测200状态码响应是否实际为登录页面
+
+        智联校园招聘在 Cookie 失效时，不会返回 302 重定向，
+        而是返回 200 状态码但页面内容是登录页。需要通过页面内容判断。
+
+        Returns:
+            bool: 是否为登录页面
+        """
+        # 检查 URL 是否包含登录相关路径
+        url_lower = response.url.lower()
+        if any(keyword in url_lower for keyword in ("login", "passport", "signin")):
+            return True
+
+        # 检查页面 title 是否包含登录相关文字
+        page_title = response.css("title::text").get("")
+        if any(keyword in page_title for keyword in ("用户登录", "登录", "Login", "Sign In")):
+            return True
+
+        # 检查页面是否存在登录表单组件
+        login_indicators = [
+            'div[class*="login-box"]',
+            'div[id*="passport"]',
+            'div[id*="login"]',
+            'form[action*="login"]',
+            'input[name*="password"]',
+        ]
+        for selector in login_indicators:
+            if response.css(selector):
+                return True
+
+        return False
 
 
 class RequestDebugMiddleware:

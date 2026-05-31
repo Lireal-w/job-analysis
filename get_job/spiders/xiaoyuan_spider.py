@@ -151,29 +151,32 @@ class XiaoyuanSpider(scrapy.Spider):
         logger.info(f"目标地区: {[(name, rid) for name, rid in self.target_regions]}")
         logger.info(f"最大翻页数: {self.max_page}")
 
+    # 网站首页 URL（供中间件获取 Cookie 使用）
+    site_url = "https://xiaoyuan.zhaopin.com/"
+
     def start_requests(self):
         """
         生成初始请求
         先访问搜索页确认 Cookie 有效，然后开始搜索职位
         """
-        logger.info(f"开始爬取智联校园招聘职位信息")
+        logger.info("开始爬取智联校园招聘职位信息")
         yield Request(
             url=self.SEARCH_URL,
-            callback=self.parse_homepage,
+            callback=self.parse,
             dont_filter=True,
             meta={"dont_redirect": False},
         )
 
     def parse(self, response):
         """
-        解析首页，验证 Cookie 后开始搜索
+        解析首页，验证 Cookie 后开始搜索职位
         """
         logger.info(f"首页响应状态码: {response.status}")
         logger.info(f"首页 URL: {response.url}")
 
-        # 检查是否被重定向到登录页面
-        if "login" in response.url.lower():
-            logger.warning("被重定向到登录页面，Cookie 可能无效，请重新登录")
+        # 检查是否需要登录（多种检测方式）
+        if self._is_login_required(response):
+            logger.warning("检测到需要登录，Cookie 可能已失效")
             return
 
         # Cookie 有效，开始搜索职位
@@ -193,18 +196,55 @@ class XiaoyuanSpider(scrapy.Spider):
                         dont_filter=True,
                     )
 
+    @staticmethod
+    def _is_login_required(response) -> bool:
+        """
+        检测响应是否为登录页面（Cookie 已失效）
+
+        智联校园招聘在 Cookie 失效时，可能：
+        1. 302 重定向到登录页（URL 包含 login/passport）
+        2. 返回 200 但页面内容是登录页（title 包含 "用户登录"）
+        3. 返回 200 但页面内容是登录表单
+
+        Returns:
+            bool: 是否需要重新登录
+        """
+        # 方式1：检查 URL 是否包含登录相关路径
+        url_lower = response.url.lower()
+        if any(keyword in url_lower for keyword in ("login", "passport", "signin")):
+            return True
+
+        # 方式2：检查页面 title 是否包含登录相关文字
+        page_title = response.css("title::text").get("")
+        if any(keyword in page_title for keyword in ("用户登录", "登录", "Login", "Sign In")):
+            return True
+
+        # 方式3：检查页面是否存在登录表单组件
+        login_indicators = [
+            'div[class*="login-box"]',
+            'div[id*="passport"]',
+            'div[id*="login"]',
+            'form[action*="login"]',
+            'input[name*="password"]',
+        ]
+        for selector in login_indicators:
+            if response.css(selector):
+                return True
+
+        return False
+
     def _build_search_url(self, keyword: str, region_id: int, page: int) -> str:
         """
         构建搜索 URL
 
         智联校园招聘的搜索 URL 格式：
-        https://xiaoyuan.zhaopin.com/search/index?keyword=Python&cityId=530&page=1
+        https://xiaoyuan.zhaopin.com/search/index?keyword=Python&city=530&page=1
 
-        支持参数：keyword, cityId, salary, experience, education, page
+        支持参数：keyword, city, salary, experience, education, page
         """
         params = {
             "keyword": keyword,
-            "cityId": region_id,
+            "city": region_id,
             "page": page,
         }
         return f"{self.SEARCH_URL}?{urlencode(params)}"
@@ -216,7 +256,8 @@ class XiaoyuanSpider(scrapy.Spider):
     def parse_job_list(self, response):
         """
         解析职位列表页（搜索页）
-        使用精确 CSS 选择器提取搜索页数据字段
+        智联校园招聘使用 Vue SSR，职位数据内嵌在 window.__INITIAL_DATA__ 中。
+        优先从 SSR 数据提取，回退到 CSS 选择器。
         """
         keyword = response.meta.get("keyword", "")
         region_name = response.meta.get("region_name", "")
@@ -225,7 +266,18 @@ class XiaoyuanSpider(scrapy.Spider):
 
         logger.info(f"正在解析职位列表 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
 
-        # 尝试解析 JSON 响应（部分接口返回 JSON）
+        # 检查是否被重定向到登录页面
+        if self._is_login_required(response):
+            logger.warning(f"职位列表页返回登录页面 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
+            return
+
+        # 优先从 SSR 内嵌数据提取（Vue SSR 页面数据在 window.__INITIAL_DATA__ 中）
+        ssr_data = self._extract_ssr_data(response)
+        if ssr_data:
+            yield from self._parse_ssr_job_list(ssr_data, keyword, region_name)
+            return
+
+        # 尝试解析纯 JSON 响应（API 接口返回）
         try:
             json_data = json.loads(response.text)
             if isinstance(json_data, dict):
@@ -234,7 +286,7 @@ class XiaoyuanSpider(scrapy.Spider):
         except (json.JSONDecodeError, TypeError):
             pass
 
-        # 解析 HTML 响应 - 使用精确 CSS 选择器
+        # 回退：解析 HTML 响应 - 使用 CSS 选择器
         sel = self.SEARCH_SELECTORS
         job_items = response.css(sel["job_item"])
 
@@ -277,6 +329,141 @@ class XiaoyuanSpider(scrapy.Spider):
                 meta={"item": item, "keyword": keyword, "region_name": region_name, "region_id": region_id},
                 dont_filter=True,
             )
+
+    @staticmethod
+    def _extract_ssr_data(response) -> dict:
+        """
+        从 Vue SSR 页面提取 window.__INITIAL_DATA__ 数据
+
+        智联校园招聘使用 Vue SSR，职位数据内嵌在 HTML 的 script 标签中：
+        <script>window.__INITIAL_DATA__ = {...}</script>
+
+        Returns:
+            解析后的字典数据，提取失败返回 None
+        """
+        # 从完整响应文本中提取 window.__INITIAL_DATA__ = {...};
+        # 使用括号平衡匹配来正确提取嵌套 JSON
+        match = re.search(
+            r"window\.__INITIAL_DATA__\s*=\s*",
+            response.text,
+        )
+        if match:
+            # 找到起始位置后，使用括号平衡法提取完整 JSON
+            start = match.end()
+            json_str = response.text[start:]
+            # 找到 JSON 的结束位置（括号平衡）
+            brace_count = 0
+            end = -1
+            for i, ch in enumerate(json_str):
+                if ch == "{":
+                    brace_count += 1
+                elif ch == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end = i + 1
+                        break
+            if end > 0:
+                json_str = json_str[:end]
+                try:
+                    data = json.loads(json_str)
+                    logger.info(f"成功提取 SSR 内嵌数据，键: {list(data.keys())}")
+                    return data
+                except json.JSONDecodeError as e:
+                    logger.warning(f"解析 SSR 内嵌数据失败: {e}")
+
+        return None
+
+    def _parse_ssr_job_list(self, ssr_data: dict, keyword: str, region_name: str):
+        """
+        解析 Vue SSR 内嵌的职位列表数据
+
+        数据路径: ssr_data -> position -> positionState -> list
+        每个职位项包含完整的职位、公司、薪资等信息。
+        """
+        # 提取职位列表
+        position_data = ssr_data.get("position", {})
+        position_state = position_data.get("positionState", {})
+        job_list = position_state.get("list", [])
+
+        if not job_list:
+            logger.warning(f"SSR 数据中未找到职位列表 - 关键词: {keyword}, 地区: {region_name}")
+            return
+
+        logger.info(f"SSR 数据中找到 {len(job_list)} 个职位 - 关键词: {keyword}, 地区: {region_name}")
+
+        for job in job_list:
+            item = XiaoyuanJobItem()
+
+            # 基本信息
+            item["job_id"] = str(job.get("jobId", ""))
+            item["job_title"] = job.get("name", "")
+            item["job_category"] = job.get("subJobTypeLevelName", "")
+
+            # 公司信息
+            item["company_name"] = job.get("companyName", "")
+            item["company_id"] = job.get("companyNumber", "")
+            item["company_type"] = job.get("property", "")
+            item["company_scale"] = job.get("companySize", "")
+            item["company_industry"] = job.get("industryName", "")
+
+            # 薪资与地点
+            item["salary_desc"] = job.get("salary60", "") or job.get("salaryReal", "")
+            item["work_city"] = job.get("workCity", region_name)
+            item["work_district"] = job.get("cityDistrict", "")
+
+            # 职位详情
+            item["education"] = job.get("education", "")
+            item["experience"] = job.get("workingExp", "")
+            item["welfare"] = " | ".join(job.get("welfareLabel", []))
+            item["publish_date"] = job.get("publishTime", "")
+            item["recruit_num"] = job.get("recruitNumber", None)
+
+            # 从 campusJobDetail 提取更详细信息
+            campus_detail = job.get("campusJobDetail", {})
+            if campus_detail:
+                if not item["company_scale"]:
+                    item["company_scale"] = campus_detail.get("orgSizeName", "")
+                if not item["company_type"]:
+                    item["company_type"] = campus_detail.get("orgTypeName", "")
+                if not item["company_industry"]:
+                    item["company_industry"] = campus_detail.get("industryName", "")
+
+            # 从 jobDetailData.position 提取更详细信息
+            job_detail = job.get("jobDetailData", {})
+            if job_detail:
+                position_detail = job_detail.get("position", {})
+                if position_detail:
+                    base = position_detail.get("base", {})
+                    if base:
+                        if not item["salary_desc"]:
+                            item["salary_desc"] = base.get("salary", "")
+                        if not item["education"]:
+                            item["education"] = base.get("education", "")
+                        if not item["experience"]:
+                            item["experience"] = base.get("positionWorkingExp", "")
+                        item["job_type"] = base.get("workType", "")
+
+                    desc = position_detail.get("desc", {})
+                    if desc:
+                        item["job_description"] = desc.get("description", "")
+                        item["welfare"] = " | ".join(desc.get("welfareTags", [])) or item.get("welfare", "")
+
+                    work_loc = position_detail.get("workLocation", {})
+                    if work_loc:
+                        item["work_address"] = work_loc.get("address", "")
+                        if not item["work_city"]:
+                            item["work_city"] = work_loc.get("positionCityId", region_name)
+
+            # 构建详情页 URL
+            job_number = job.get("number", "")
+            if job_number:
+                item["source_url"] = f"https://xiaoyuan.zhaopin.com/position/{job_number}"
+            else:
+                item["source_url"] = ""
+
+            item["source_platform"] = "智联校园招聘"
+
+            yield item
 
     def _parse_json_job_list(self, json_data: dict, keyword: str, region_name: str):
         """解析 JSON 格式的职位列表"""
