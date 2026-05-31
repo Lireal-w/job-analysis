@@ -8,8 +8,8 @@
     # 强制重新登录获取Cookie
     python run.py --force-login
 
-    # 指定搜索关键词和城市
-    python run.py --keyword="Python,Java" --city="北京,上海"
+    # 指定搜索关键词和地区（支持城市名、省份名、地区ID）
+    python run.py --keyword="Python,Java" --region="北京,上海,530"
 
     # 指定最大翻页数
     python run.py --max-page=5
@@ -62,7 +62,7 @@ def main():
     parser = argparse.ArgumentParser(description="智联校园招聘爬虫")
     parser.add_argument("--force-login", action="store_true", help="强制重新登录获取Cookie")
     parser.add_argument("--keyword", type=str, default=None, help="搜索关键词，多个用逗号分隔")
-    parser.add_argument("--city", type=str, default=None, help="城市名称，多个用逗号分隔")
+    parser.add_argument("--region", type=str, default=None, help="目标地区，多个用逗号分隔（支持城市名、省份名、地区ID）")
     parser.add_argument("--max-page", type=int, default=None, help="最大翻页数")
     parser.add_argument("--login-only", action="store_true", help="仅登录获取Cookie，不启动爬虫")
     parser.add_argument("--output", type=str, default=None, help="输出文件路径（支持json/csv）")
@@ -107,8 +107,8 @@ def main():
     spider_args = []
     if args.keyword:
         spider_args.append(f"keyword={args.keyword}")
-    if args.city:
-        spider_args.append(f"city={args.city}")
+    if args.region:
+        spider_args.append(f"region={args.region}")
     if args.max_page:
         spider_args.append(f"max_page={args.max_page}")
 

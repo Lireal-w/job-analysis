@@ -190,7 +190,7 @@ python run.py --force-login
 python run.py
 
 # 指定搜索关键词和城市
-python run.py --keyword="Python,数据分析" --city="北京,上海,深圳"
+python run.py --keyword="Python,数据分析" --region="北京,上海,深圳"
 
 # 指定最大翻页数
 python run.py --max-page=5

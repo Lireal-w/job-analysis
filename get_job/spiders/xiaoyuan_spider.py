@@ -17,11 +17,20 @@ import os
 import re
 from datetime import datetime
 from urllib.parse import urljoin, urlencode
+from typing import Dict, List, Tuple
 
 import scrapy
 from scrapy.http import Request, Response
 
 from get_job.items import XiaoyuanJobItem, XiaoyuanCompanyItem
+from get_job.region import (
+    RegionStrategyFactory,
+    XIAOYUAN_REGION_TABLE,
+    create_xiaoyuan_region_factory,
+    get_search_keywords_from_env,
+    get_target_regions_from_env,
+    get_max_page_from_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +48,20 @@ class XiaoyuanSpider(scrapy.Spider):
         "CONCURRENT_REQUESTS_PER_DOMAIN": 2,
     }
 
-    # 搜索关键词（可根据需要修改）
-    search_keywords = ["Python", "Java", "前端", "数据分析", "产品经理", "运营"]
+    # 地区策略工厂（智联校园招聘专用）
+    region_factory = create_xiaoyuan_region_factory()
 
-    # 城市筛选（可根据需要修改）
-    cities = ["北京", "上海", "广州", "深圳", "杭州", "成都", "武汉", "南京"]
+    # 搜索关键词（优先从 .env 读取，否则使用默认值）
+    search_keywords = get_search_keywords_from_env()
 
-    # 最大翻页数
-    max_page = 10
+    # 目标地区列表：[(地区名称, 地区ID), ...]（优先从 .env 读取，否则使用默认值）
+    target_regions: List[Tuple[str, int]] = get_target_regions_from_env()
+
+    # 最大翻页数（优先从 .env 读取，否则使用默认值）
+    max_page = get_max_page_from_env()
+
+    # 智联校园招聘地区映射表（供外部查询使用）
+    REGION_TABLE = XIAOYUAN_REGION_TABLE
 
     # ==========================================
     # URL 配置
@@ -112,23 +127,29 @@ class XiaoyuanSpider(scrapy.Spider):
 
         return False
 
-    def __init__(self, keyword=None, city=None, max_page=None, *args, **kwargs):
+    def __init__(self, keyword=None, region=None, max_page=None, *args, **kwargs):
         """
         初始化爬虫
 
         Args:
             keyword: 搜索关键词，多个关键词用逗号分隔
-            city: 城市名称，多个城市用逗号分隔
+            region: 目标地区，多个地区用逗号分隔（支持城市名、省份名、地区ID）
             max_page: 最大翻页数
         """
         super().__init__(*args, **kwargs)
 
         if keyword:
             self.search_keywords = [k.strip() for k in keyword.split(",")]
-        if city:
-            self.cities = [c.strip() for c in city.split(",")]
+        if region:
+            region_inputs = [r.strip() for r in region.split(",")]
+            self.target_regions = self.region_factory.resolve_all(region_inputs)
         if max_page:
             self.max_page = int(max_page)
+
+        # 初始化日志：显示当前配置
+        logger.info(f"搜索关键词: {self.search_keywords}")
+        logger.info(f"目标地区: {[(name, rid) for name, rid in self.target_regions]}")
+        logger.info(f"最大翻页数: {self.max_page}")
 
     def start_requests(self):
         """
@@ -157,32 +178,33 @@ class XiaoyuanSpider(scrapy.Spider):
 
         # Cookie 有效，开始搜索职位
         for keyword in self.search_keywords:
-            for city in self.cities:
+            for region_name, region_id in self.target_regions:
                 for page in range(1, self.max_page + 1):
-                    url = self._build_search_url(keyword, city, page)
+                    url = self._build_search_url(keyword, region_id, page)
                     yield Request(
                         url=url,
                         callback=self.parse_job_list,
                         meta={
                             "keyword": keyword,
-                            "city": city,
+                            "region_name": region_name,
+                            "region_id": region_id,
                             "page": page,
                         },
                         dont_filter=True,
                     )
 
-    def _build_search_url(self, keyword: str, city: str, page: int) -> str:
+    def _build_search_url(self, keyword: str, region_id: int, page: int) -> str:
         """
         构建搜索 URL
 
         智联校园招聘的搜索 URL 格式：
-        https://xiaoyuan.zhaopin.com/search/index?keyword=Python&city=北京&page=1
+        https://xiaoyuan.zhaopin.com/search/index?keyword=Python&cityId=530&page=1
 
-        支持参数：keyword, city, salary, experience, education, page
+        支持参数：keyword, cityId, salary, experience, education, page
         """
         params = {
             "keyword": keyword,
-            "city": city,
+            "cityId": region_id,
             "page": page,
         }
         return f"{self.SEARCH_URL}?{urlencode(params)}"
@@ -197,16 +219,17 @@ class XiaoyuanSpider(scrapy.Spider):
         使用精确 CSS 选择器提取搜索页数据字段
         """
         keyword = response.meta.get("keyword", "")
-        city = response.meta.get("city", "")
+        region_name = response.meta.get("region_name", "")
+        region_id = response.meta.get("region_id", 0)
         page = response.meta.get("page", 1)
 
-        logger.info(f"正在解析职位列表 - 关键词: {keyword}, 城市: {city}, 页码: {page}")
+        logger.info(f"正在解析职位列表 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
 
         # 尝试解析 JSON 响应（部分接口返回 JSON）
         try:
             json_data = json.loads(response.text)
             if isinstance(json_data, dict):
-                yield from self._parse_json_job_list(json_data, keyword, city)
+                yield from self._parse_json_job_list(json_data, keyword, region_name)
                 return
         except (json.JSONDecodeError, TypeError):
             pass
@@ -216,11 +239,11 @@ class XiaoyuanSpider(scrapy.Spider):
         job_items = response.css(sel["job_item"])
 
         if not job_items:
-            logger.warning(f"未找到职位列表项 - 关键词: {keyword}, 城市: {city}, 页码: {page}")
-            self._save_debug_page(response, f"job_list_{keyword}_{city}_{page}")
+            logger.warning(f"未找到职位列表项 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
+            self._save_debug_page(response, f"job_list_{keyword}_{region_name}_{page}")
             return
 
-        logger.info(f"找到 {len(job_items)} 个职位项 - 关键词: {keyword}, 城市: {city}, 页码: {page}")
+        logger.info(f"找到 {len(job_items)} 个职位项 - 关键词: {keyword}, 地区: {region_name}(ID:{region_id}), 页码: {page}")
 
         for job_item in job_items:
             # 提取职位详情链接
@@ -237,7 +260,7 @@ class XiaoyuanSpider(scrapy.Spider):
             item["job_title"] = job_item.css(f'{sel["job_title"]}::text').get("").strip()
             item["company_name"] = job_item.css(f'{sel["company_name"]}::text').get("").strip()
             item["salary_desc"] = job_item.css(f'{sel["salary"]}::text').get("").strip()
-            item["work_city"] = job_item.css(f'{sel["location"]}::text').get("").strip() or city
+            item["work_city"] = job_item.css(f'{sel["location"]}::text').get("").strip() or region_name
             item["publish_date"] = job_item.css(f'{sel["publish_time"]}::text').get("").strip()
             item["education"] = job_item.css(f'{sel["education"]}::text').get("").strip()
             item["experience"] = job_item.css(f'{sel["experience"]}::text').get("").strip()
@@ -251,11 +274,11 @@ class XiaoyuanSpider(scrapy.Spider):
             yield Request(
                 url=detail_url,
                 callback=self.parse_job_detail,
-                meta={"item": item, "keyword": keyword, "city": city},
+                meta={"item": item, "keyword": keyword, "region_name": region_name, "region_id": region_id},
                 dont_filter=True,
             )
 
-    def _parse_json_job_list(self, json_data: dict, keyword: str, city: str):
+    def _parse_json_job_list(self, json_data: dict, keyword: str, region_name: str):
         """解析 JSON 格式的职位列表"""
         job_list = json_data.get("data", {}).get("list", [])
         if not job_list:
@@ -278,7 +301,7 @@ class XiaoyuanSpider(scrapy.Spider):
             item["salary_desc"] = job.get("salary", job.get("salaryDesc", ""))
             item["salary_min"] = job.get("salaryMin", None)
             item["salary_max"] = job.get("salaryMax", None)
-            item["work_city"] = job.get("city", job.get("workCity", city))
+            item["work_city"] = job.get("city", job.get("workCity", region_name))
             item["work_district"] = job.get("district", job.get("workDistrict", ""))
             item["education"] = job.get("education", job.get("eduLevel", ""))
             item["experience"] = job.get("experience", job.get("workExp", ""))
@@ -295,7 +318,7 @@ class XiaoyuanSpider(scrapy.Spider):
                 yield Request(
                     url=detail_url,
                     callback=self.parse_job_detail,
-                    meta={"item": item, "keyword": keyword, "city": city},
+                    meta={"item": item, "keyword": keyword, "region_name": region_name},
                     dont_filter=True,
                 )
             else:
@@ -329,7 +352,7 @@ class XiaoyuanSpider(scrapy.Spider):
         
         item = response.meta.get("item", XiaoyuanJobItem())
         keyword = response.meta.get("keyword", "")
-        city = response.meta.get("city", "")
+        region_name = response.meta.get("region_name", "")
 
         logger.info(f"正在解析职位详情 - {item.get('job_title', 'Unknown')}")
 
@@ -413,7 +436,7 @@ class XiaoyuanSpider(scrapy.Spider):
             yield Request(
                 url=company_url,
                 callback=self.parse_company_detail,
-                meta={"city": city, "company_name": item.get("company_name", "")},
+                meta={"region_name": region_name, "company_name": item.get("company_name", "")},
                 dont_filter=True,
             )
 
@@ -502,7 +525,7 @@ class XiaoyuanSpider(scrapy.Spider):
                 job["company_name"] = item.get("company_name", "")
                 job["company_id"] = item.get("company_id", "")
                 job["salary_desc"] = job_item.css(f'{search_sel["salary"]}::text').get("").strip()
-                job["work_city"] = response.meta.get("city", "")
+                job["work_city"] = response.meta.get("region_name", "")
                 job["source_url"] = detail_url
 
                 job_id_match = re.search(r'/(\d+)', detail_link)
@@ -512,7 +535,7 @@ class XiaoyuanSpider(scrapy.Spider):
                 yield Request(
                     url=detail_url,
                     callback=self.parse_job_detail,
-                    meta={"item": job, "keyword": "", "city": response.meta.get("city", "")},
+                    meta={"item": job, "keyword": "", "region_name": response.meta.get("region_name", "")},
                     dont_filter=True,
                 )
 
