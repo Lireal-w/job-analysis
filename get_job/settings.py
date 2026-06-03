@@ -75,16 +75,27 @@ EXTENSIONS = {
 
 # Configure item pipelines
 ITEM_PIPELINES = {
-    # 数据清洗管道（优先执行）
+    # 智联校园招聘 - 数据清洗管道（优先执行）
     "get_job.pipelines.XiaoyuanDataCleanPipeline": 100,
-    # 去重管道
+    # 智联校园招聘 - 去重管道
     "get_job.pipelines.XiaoyuanDedupPipeline": 200,
-    # MongoDB 存储管道
+    # 智联校园招聘 - MongoDB 存储管道
     "get_job.pipelines.XiaoyuanMongoPipeline": 300,
-    # JSON 存储管道
+    # 智联校园招聘 - JSON 存储管道
     "get_job.pipelines.XiaoyuanJsonPipeline": 400,
-    # CSV 存储管道
+    # 智联校园招聘 - CSV 存储管道
     "get_job.pipelines.XiaoyuanCsvPipeline": 401,
+
+    # 猎聘 - 数据清洗管道
+    "get_job.pipelines.LiepinDataCleanPipeline": 110,
+    # 猎聘 - 去重管道
+    "get_job.pipelines.LiepinDedupPipeline": 210,
+    # 猎聘 - MongoDB 存储管道
+    "get_job.pipelines.LiepinMongoPipeline": 310,
+    # 猎聘 - JSON 存储管道
+    "get_job.pipelines.LiepinJsonPipeline": 410,
+    # 猎聘 - CSV 存储管道
+    "get_job.pipelines.LiepinCsvPipeline": 411,
 }
 
 # Enable and configure the AutoThrottle extension (disabled by default)

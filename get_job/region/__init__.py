@@ -43,6 +43,16 @@ from get_job.region.xiaoyuan_table import (
     XIAOYUAN_PROVINCE_TABLE,
 )
 
+# 猎聘
+from get_job.region.liepin_strategy import (
+    create_liepin_region_factory,
+    get_liepin_region_table,
+)
+from get_job.region.liepin_table import (
+    LIEPIN_REGION_TABLE,
+    LIEPIN_PROVINCE_TABLE,
+)
+
 __all__ = [
     # 基础类
     "RegionStrategy",
@@ -59,4 +69,9 @@ __all__ = [
     "get_xiaoyuan_region_table",
     "XIAOYUAN_REGION_TABLE",
     "XIAOYUAN_PROVINCE_TABLE",
+    # 猎聘
+    "create_liepin_region_factory",
+    "get_liepin_region_table",
+    "LIEPIN_REGION_TABLE",
+    "LIEPIN_PROVINCE_TABLE",
 ]

@@ -1,21 +1,29 @@
 """
-智联校园招聘爬虫运行脚本
+招聘网站爬虫运行脚本
+
+支持平台：智联校园招聘(xiaoyuan)、猎聘(liepin)
 
 使用方法：
-    # 默认运行（使用缓存Cookie）
+    # 默认运行智联校园招聘爬虫
     python run.py
+
+    # 运行猎聘爬虫
+    python run.py --spider liepin
 
     # 强制重新登录获取Cookie
     python run.py --force-login
+    python run.py --spider liepin --force-login
 
     # 指定搜索关键词和地区（支持城市名、省份名、地区ID）
     python run.py --keyword="Python,Java" --region="北京,上海,530"
+    python run.py --spider liepin --keyword="Python,Java" --region="北京,上海"
 
     # 指定最大翻页数
     python run.py --max-page=5
 
     # 仅登录获取Cookie（不启动爬虫）
     python run.py --login-only
+    python run.py --spider liepin --login-only
 """
 
 import argparse
@@ -58,8 +66,27 @@ def setup_file_logging():
     root_logger.addHandler(file_handler)
 
 
+# 爬虫名称与对应的 Spider 类映射
+SPIDER_MAP = {
+    "xiaoyuan": "get_job.spiders.xiaoyuan_spider.XiaoyuanSpider",
+    "liepin": "get_job.spiders.liepin_spider.LiepinSpider",
+}
+
+
+def _get_spider_class(spider_name: str):
+    """根据爬虫名称动态导入并返回 Spider 类"""
+    import importlib
+    module_path = SPIDER_MAP[spider_name]
+    module_name, class_name = module_path.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    return getattr(module, class_name)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="智联校园招聘爬虫")
+    parser = argparse.ArgumentParser(description="招聘网站爬虫（支持智联校园招聘、猎聘等平台）")
+    parser.add_argument("--spider", type=str, default="xiaoyuan",
+                        choices=list(SPIDER_MAP.keys()),
+                        help="选择爬虫：xiaoyuan(智联校园招聘)、liepin(猎聘)，默认 xiaoyuan")
     parser.add_argument("--force-login", action="store_true", help="强制重新登录获取Cookie")
     parser.add_argument("--keyword", type=str, default=None, help="搜索关键词，多个用逗号分隔")
     parser.add_argument("--region", type=str, default=None, help="目标地区，多个用逗号分隔（支持城市名、省份名、地区ID）")
@@ -74,14 +101,15 @@ def main():
         setup_file_logging()
         logger = logging.getLogger(__name__)
 
-        logger.info("仅登录模式：启动浏览器获取Cookie...")
+        spider_class = _get_spider_class(args.spider)
+
+        logger.info(f"仅登录模式：启动浏览器获取 {args.spider} Cookie...")
         from get_job.utils.drissionpage_login import get_cookies_with_login
         from get_job.utils.redis_helper import close_redis_client
-        from get_job.spiders.xiaoyuan_spider import XiaoyuanSpider
         try:
             cookies = get_cookies_with_login(
-                url=XiaoyuanSpider.site_url,
-                is_logged_in=XiaoyuanSpider.is_logged_in,
+                url=spider_class.site_url,
+                is_logged_in=spider_class.is_logged_in,
                 force_login=True,
             )
             if cookies:
@@ -101,7 +129,7 @@ def main():
     # 构建爬虫运行命令
     from scrapy.cmdline import execute
 
-    cmd_args = ["scrapy", "crawl", "xiaoyuan"]
+    cmd_args = ["scrapy", "crawl", args.spider]
 
     # 传递参数给爬虫
     spider_args = []
