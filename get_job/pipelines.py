@@ -438,7 +438,7 @@ class LiepinDataCleanPipeline:
         # 薪资解析
         salary_desc = adapter.get('salary_desc', '')
         if salary_desc and not adapter.get('salary_min'):
-            from get_job.spiders.liepin_utils import parse_liepin_salary
+            from get_job.spiders.liepin import parse_liepin_salary
             salary_min, salary_max = parse_liepin_salary(salary_desc)
             if salary_min:
                 adapter['salary_min'] = salary_min
