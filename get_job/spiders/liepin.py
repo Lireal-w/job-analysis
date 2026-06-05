@@ -7,14 +7,13 @@ from datetime import datetime
 from urllib.parse import quote
 from typing import List, Tuple
 
-import scrapy
 from scrapy.http import Request
 
 from get_job.items import LiepinJobItem, LiepinCompanyItem
-from get_job.region import get_search_keywords_from_env, get_target_regions_from_env, get_max_page_from_env
 from get_job.region.liepin_strategy import create_liepin_region_factory
 from get_job.region.liepin_table import LIEPIN_REGION_TABLE
-from get_job.utils.spider_helpers import extract_ssr_data, extract_json_data, parse_salary, is_login_required, save_debug_page
+from get_job.spiders.base import BaseSpider
+from get_job.utils.spider_helpers import extract_ssr_data, extract_json_data, parse_salary, save_debug_page
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +44,17 @@ def parse_liepin_salary(salary_desc: str):
 
 # ==================== Spider ====================
 
-class LiepinSpider(scrapy.Spider):
+class LiepinSpider(BaseSpider):
     """猎聘招聘爬虫"""
     name = "liepin"
+    source_platform = "猎聘"
     allowed_domains = ["liepin.com", "api-c.liepin.com", "capi.liepin.com"]
     start_urls = ["https://www.liepin.com/"]
     custom_settings = {"DOWNLOAD_DELAY": 3, "CONCURRENT_REQUESTS_PER_DOMAIN": 2}
     region_factory = create_liepin_region_factory()
-    search_keywords = get_search_keywords_from_env()
-    target_regions: List[Tuple[str, int]] = get_target_regions_from_env(region_factory)
-    max_page = get_max_page_from_env()
+    search_keywords = []
+    target_regions: List[Tuple[str, int]] = []
+    max_page = 0
     REGION_TABLE = LIEPIN_REGION_TABLE
     site_url = "https://www.liepin.com/"
     SEARCH_API_URL = "https://api-c.liepin.com/api/com.liepin.search4c.pc-search"
@@ -62,6 +62,7 @@ class LiepinSpider(scrapy.Spider):
 
     @staticmethod
     def is_logged_in(page) -> bool:
+        """猎聘平台登录状态检测"""
         try:
             for xpath in [
                 "//div[contains(@class,'user-info')]",
@@ -75,16 +76,8 @@ class LiepinSpider(scrapy.Spider):
         return False
 
     def __init__(self, keyword=None, region=None, max_page=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if keyword:
-            self.search_keywords = [k.strip() for k in keyword.split(",")]
-        if region:
-            self.target_regions = self.region_factory.resolve_all([r.strip() for r in region.split(",")])
-        if max_page:
-            self.max_page = int(max_page)
-        logger.info(f"搜索关键词: {self.search_keywords}")
-        logger.info(f"目标地区: {[(n, r) for n, r in self.target_regions]}")
-        logger.info(f"最大翻页数: {self.max_page}")
+        super().__init__(keyword=keyword, region=region, max_page=max_page, *args, **kwargs)
+        self.log_start_info()
 
     def start_requests(self):
         logger.info("开始爬取猎聘职位信息")
@@ -92,8 +85,7 @@ class LiepinSpider(scrapy.Spider):
 
     def parse(self, response):
         logger.info(f"首页响应状态码: {response.status}, URL: {response.url}")
-        if is_login_required(response):
-            logger.warning("检测到需要登录，Cookie 可能已失效")
+        if self.check_login_required(response):
             return
         for keyword in self.search_keywords:
             for region_name, _ in self.target_regions:

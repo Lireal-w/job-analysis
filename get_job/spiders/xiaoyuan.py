@@ -8,12 +8,12 @@ from datetime import datetime
 from urllib.parse import urlencode, urljoin
 from typing import List, Tuple
 
-import scrapy
 from scrapy.http import Request
 
 from get_job.items import XiaoyuanJobItem, XiaoyuanCompanyItem
-from get_job.region import XIAOYUAN_REGION_TABLE, create_xiaoyuan_region_factory, get_search_keywords_from_env, get_target_regions_from_env, get_max_page_from_env
-from get_job.utils.spider_helpers import extract_ssr_data, extract_full_text, is_login_required, save_debug_page
+from get_job.region import XIAOYUAN_REGION_TABLE, create_xiaoyuan_region_factory
+from get_job.spiders.base import BaseSpider
+from get_job.utils.spider_helpers import extract_ssr_data, extract_full_text, save_debug_page
 
 logger = logging.getLogger(__name__)
 
@@ -61,16 +61,17 @@ def extract_auth_params(ssr_data, response):
 
 # ==================== Spider ====================
 
-class XiaoyuanSpider(scrapy.Spider):
+class XiaoyuanSpider(BaseSpider):
     """智联校园招聘爬虫"""
     name = "xiaoyuan"
+    source_platform = "智联校园招聘"
     allowed_domains = ["xiaoyuan.zhaopin.com", "zhaopin.com", "cgate.zhaopin.com"]
     start_urls = ["https://xiaoyuan.zhaopin.com/search/index"]
     custom_settings = {"DOWNLOAD_DELAY": 2, "CONCURRENT_REQUESTS_PER_DOMAIN": 2}
     region_factory = create_xiaoyuan_region_factory()
-    search_keywords = get_search_keywords_from_env()
-    target_regions: List[Tuple[str, int]] = get_target_regions_from_env(region_factory)
-    max_page = get_max_page_from_env()
+    search_keywords = []
+    target_regions: List[Tuple[str, int]] = []
+    max_page = 0
     REGION_TABLE = XIAOYUAN_REGION_TABLE
     site_url = "https://xiaoyuan.zhaopin.com/"
     SEARCH_URL = "https://xiaoyuan.zhaopin.com/search/index"
@@ -98,6 +99,7 @@ class XiaoyuanSpider(scrapy.Spider):
 
     @staticmethod
     def is_logged_in(page) -> bool:
+        """智联校园招聘平台登录状态检测"""
         try:
             if page.ele("xpath://div[@class='user-info']//img[@class='avatar']/@src", timeout=3):
                 return True
@@ -108,16 +110,8 @@ class XiaoyuanSpider(scrapy.Spider):
         return False
 
     def __init__(self, keyword=None, region=None, max_page=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if keyword:
-            self.search_keywords = [k.strip() for k in keyword.split(",")]
-        if region:
-            self.target_regions = self.region_factory.resolve_all([r.strip() for r in region.split(",")])
-        if max_page:
-            self.max_page = int(max_page)
-        logger.info(f"搜索关键词: {self.search_keywords}")
-        logger.info(f"目标地区: {[(n, r) for n, r in self.target_regions]}")
-        logger.info(f"最大翻页数: {self.max_page}")
+        super().__init__(keyword=keyword, region=region, max_page=max_page, *args, **kwargs)
+        self.log_start_info()
 
     def start_requests(self):
         logger.info("开始爬取智联校园招聘职位信息")
@@ -125,8 +119,7 @@ class XiaoyuanSpider(scrapy.Spider):
 
     def parse(self, response):
         logger.info(f"首页响应状态码: {response.status}, URL: {response.url}")
-        if is_login_required(response):
-            logger.warning("检测到需要登录，Cookie 可能已失效")
+        if self.check_login_required(response):
             return
         for keyword in self.search_keywords:
             for region_name, region_id in self.target_regions:
@@ -145,9 +138,10 @@ class XiaoyuanSpider(scrapy.Spider):
         region_name = response.meta.get("region_name", "")
         region_id = response.meta.get("region_id", 0)
         page = response.meta.get("page", 1)
-        if is_login_required(response):
+        if self.check_login_required(response):
             logger.warning(f"职位列表页返回登录页 - {keyword}/{region_name}")
             return
+        logger.info(f"职位列表页响应状态码: {response.status}, URL: {response.url}")
         ssr_data = extract_xiaoyuan_ssr_data(response)
         if ssr_data:
             yield from self._parse_ssr_job_list(ssr_data, keyword, region_name)
@@ -239,12 +233,28 @@ class XiaoyuanSpider(scrapy.Spider):
                     if wl:
                         item["work_address"] = wl.get("address", "")
                         if not item["work_city"]: item["work_city"] = wl.get("positionWorkCity", "")
-            number = job.get("number", "")
+            number = job.get("job_id", "")
             if number:
-                item["source_url"] = f"https://xiaoyuan.zhaopin.com/position/{number}"
+                item["source_url"] = f"https://xiaoyuan.zhaopin.com/job/{number}"
             item["crawl_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             item["source_platform"] = "智联校园招聘"
-            yield item
+            number = job.get("number", "")
+            request = None
+            if number:
+                
+                item["source_url"] = f"https://xiaoyuan.zhaopin.com/job/{number}"
+                logger.info(f"准备发出请求 - {item['source_url']}")
+                request = Request(
+                    url=item["source_url"], 
+                    callback=self.parse_job_detail,
+                    meta={"item": item, "keyword": keyword, "region_name": region_name}, 
+                    dont_filter=True
+                )
+            else:
+                item["source_url"] = ""
+            # yield item
+            if request:
+                yield request
 
     def _parse_json_job_list(self, json_data, keyword, region_name):
         data = json_data.get("data", {})
@@ -375,6 +385,7 @@ class XiaoyuanSpider(scrapy.Spider):
         item["source_url"] = response.url
         item["source_platform"] = "智联校园招聘"
         yield item
+        save_debug_page(response, f"job_detail_{response.url.split('/')[-1]}")
         company_url = response.css(f'{sel["company_name"]}::attr(href)').get()
         if not company_url and item.get("company_id"):
             company_url = self.COMPANY_DETAIL_URL.format(company_id=item["company_id"])
@@ -387,33 +398,64 @@ class XiaoyuanSpider(scrapy.Spider):
     def parse_company_detail(self, response):
         item = XiaoyuanCompanyItem()
         sel = self.COMPANY_DETAIL_SELECTORS
+        
+        # 1. 基础信息提取
         m = re.search(r'/companydetail/(\d+)', response.url)
         item["company_id"] = m.group(1) if m else ""
-        item["company_name"] = response.css(f'{sel["company_name"]}::text').get("").strip()
-        item["company_logo"] = response.css(f'{sel["company_logo"]}::attr(src)').get("")
-        item["company_scale"] = response.css(f'{sel["company_scale"]}::text').get("").strip()
-        item["company_type"] = ""
-        item["company_industry"] = response.css(f'{sel["company_industry"]}::text').get("").strip()
-        item["company_address"] = response.css(f'{sel["company_address"]}::text').get("").strip()
-        cd = response.css(sel["company_description"])
-        item["company_description"] = extract_full_text(cd) if cd else ""
-        item["company_short_name"] = ""
-        item["company_website"] = response.css('a[class*="website"]::attr(href), a[class*="url"]::attr(href)').get("")
         item["source_url"] = response.url
         item["source_platform"] = "智联校园招聘"
+        item["crawl_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 2. 优先尝试从 SSR 数据中提取公司信息（精准且稳定）
+        ssr_data = extract_xiaoyuan_ssr_data(response)
+        if ssr_data:
+            comp = ssr_data.get("companyDetail", ssr_data.get("company", {}))
+            if comp:
+                item["company_name"] = comp.get("companyName", "")
+                item["company_logo"] = comp.get("companyLogo", "")
+                item["company_scale"] = comp.get("companySize", comp.get("orgSizeName", ""))
+                item["company_type"] = comp.get("companyType", comp.get("orgTypeName", ""))
+                item["company_industry"] = comp.get("industryName", "")
+                item["company_address"] = comp.get("companyAddress", "")
+                item["company_description"] = comp.get("companyDescription", comp.get("compDesc", ""))
+                item["company_website"] = comp.get("companyWebsite", "")
+                item["company_short_name"] = comp.get("companyShortName", "")
+
+        # 3. 降级策略：若 SSR 无数据或字段缺失，使用更精准的 CSS 选择器补全
+        if not item.get("company_name"):
+            item["company_name"] = response.css('div.company-header h1::text, h1.company-name::text').get("").strip()
+        if not item.get("company_logo"):
+            item["company_logo"] = response.css('div.company-header img.logo::attr(src), img.company-logo::attr(src)').get("")
+        if not item.get("company_scale"):
+            item["company_scale"] = response.css('div.company-info span.scale::text, li:contains("规模") span::text').get("").strip()
+        if not item.get("company_type"):
+            item["company_type"] = response.css('div.company-info span.type::text, li:contains("类型") span::text').get("").strip()
+        if not item.get("company_industry"):
+            item["company_industry"] = response.css('div.company-info span.industry::text, li:contains("行业") span::text').get("").strip()
+        if not item.get("company_address"):
+            item["company_address"] = response.css('div.company-info span.address::text, li:contains("地址") span::text').get("").strip()
+        if not item.get("company_description"):
+            cd = response.css('div.company-description, div.comp-description')
+            item["company_description"] = extract_full_text(cd) if cd else ""
+        if not item.get("company_website"):
+            item["company_website"] = response.css('a[class*="website"]::attr(href), a[class*="url"]::attr(href)').get("")
+
+        save_debug_page(response, f"company_detail_{item['company_id']}")
         yield item
-        job_items = response.css(sel["job_list"])
+        
+        # 4. 提取公司页内的在招职位列表
+        job_items = response.css('div.job-list div.job-item, div.position-list div.position-item')
         if job_items:
             ss = self.SEARCH_SELECTORS
             for ji in job_items:
-                link = ji.css(f'{ss["job_link"]}::attr(href)').get()
+                link = ji.css(f'{ss["job_link"]}::attr(href), a::attr(href)').get()
                 if not link:
                     continue
                 job = XiaoyuanJobItem()
-                job["job_title"] = ji.css(f'{ss["job_title"]}::text').get("").strip()
+                job["job_title"] = ji.css(f'{ss["job_title"]}::text, a::text').get("").strip()
                 job["company_name"] = item.get("company_name", "")
                 job["company_id"] = item.get("company_id", "")
-                job["salary_desc"] = ji.css(f'{ss["salary"]}::text').get("").strip()
+                job["salary_desc"] = ji.css(f'{ss["salary"]}::text, span.salary::text').get("").strip()
                 job["work_city"] = response.meta.get("region_name", "")
                 job["source_url"] = urljoin(response.url, link)
                 jm = re.search(r'/(\d+)', link)
@@ -422,3 +464,4 @@ class XiaoyuanSpider(scrapy.Spider):
                 yield Request(url=urljoin(response.url, link), callback=self.parse_job_detail,
                               meta={"item": job, "keyword": "", "region_name": response.meta.get("region_name", "")},
                               dont_filter=True)
+

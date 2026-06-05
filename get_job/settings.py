@@ -75,27 +75,14 @@ EXTENSIONS = {
 
 # Configure item pipelines
 ITEM_PIPELINES = {
-    # 智联校园招聘 - 数据清洗管道（优先执行）
-    "get_job.pipelines.XiaoyuanDataCleanPipeline": 100,
-    # 智联校园招聘 - 去重管道
-    "get_job.pipelines.XiaoyuanDedupPipeline": 200,
-    # 智联校园招聘 - MongoDB 存储管道
-    "get_job.pipelines.XiaoyuanMongoPipeline": 300,
-    # 智联校园招聘 - JSON 存储管道
-    "get_job.pipelines.XiaoyuanJsonPipeline": 400,
-    # 智联校园招聘 - CSV 存储管道
-    "get_job.pipelines.XiaoyuanCsvPipeline": 401,
-
-    # 猎聘 - 数据清洗管道
-    "get_job.pipelines.LiepinDataCleanPipeline": 110,
-    # 猎聘 - 去重管道
-    "get_job.pipelines.LiepinDedupPipeline": 210,
-    # 猎聘 - MongoDB 存储管道
-    "get_job.pipelines.LiepinMongoPipeline": 310,
-    # 猎聘 - JSON 存储管道
-    "get_job.pipelines.LiepinJsonPipeline": 410,
-    # 猎聘 - CSV 存储管道
-    "get_job.pipelines.LiepinCsvPipeline": 411,
+    # 数据清洗管道（优先执行，根据 Item 类型自动分发）
+    "get_job.pipelines.DataCleanPipeline": 100,
+    # 去重管道（按平台分别去重）
+    "get_job.pipelines.DedupPipeline": 200,
+    # MongoDB 存储管道（按 Job/Company 分集合存储）
+    "get_job.pipelines.MongoPipeline": 300,
+    # JSON 文件存储管道（按平台分文件存储）
+    "get_job.pipelines.JsonPipeline": 400,
 }
 
 # Enable and configure the AutoThrottle extension (disabled by default)
@@ -166,3 +153,4 @@ RETRY_HTTP_CODES = [500, 502, 503, 504, 408, 429]
 
 # 下载超时
 DOWNLOAD_TIMEOUT = 30
+DUPEFILTER_CLASS = 'scrapy.dupefilters.RFPDupeFilter'

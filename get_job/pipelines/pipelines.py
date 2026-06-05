@@ -44,6 +44,13 @@ def _get_item_platform(item) -> str:
         return 'xiaoyuan'
     elif isinstance(item, (LiepinJobItem, LiepinCompanyItem)):
         return 'liepin'
+    # 兜底：通过 source_platform 字段判断
+    adapter = ItemAdapter(item)
+    platform = adapter.get('source_platform', '')
+    if '智联' in platform or '校园' in platform:
+        return 'xiaoyuan'
+    elif '猎聘' in platform:
+        return 'liepin'
     return None
 
 
@@ -56,15 +63,15 @@ def _import_object(dotted_path: str):
 
 
 def _is_job_item(item) -> bool:
-    """判断是否为职位 Item"""
-    from get_job.items import XiaoyuanJobItem, LiepinJobItem
-    return isinstance(item, (XiaoyuanJobItem, LiepinJobItem))
+    """判断是否为职位 Item（基于 BaseJobItem 统一基类）"""
+    from get_job.items import BaseJobItem
+    return isinstance(item, BaseJobItem)
 
 
 def _is_company_item(item) -> bool:
-    """判断是否为公司 Item"""
-    from get_job.items import XiaoyuanCompanyItem, LiepinCompanyItem
-    return isinstance(item, (XiaoyuanCompanyItem, LiepinCompanyItem))
+    """判断是否为公司 Item（基于 BaseCompanyItem 统一基类）"""
+    from get_job.items import BaseCompanyItem
+    return isinstance(item, BaseCompanyItem)
 
 
 # ==========================================
