@@ -417,3 +417,36 @@ def save_debug_page(response, filename: str, output_dir: str = "debug_pages"):
         logger.info(f"调试页面已保存: {filepath}")
     except Exception as e:
         logger.error(f"保存调试页面失败: {e}")
+
+
+# ==========================================
+# 数据清洗
+# ==========================================
+
+def clean_item_fields(adapter) -> None:
+    """
+    清理 Item 中所有字段的空白字符（原地修改）
+
+    对字符串字段：去除首尾空白，将多个连续空白替换为单个空格。
+    对列表字段：清理列表中每个字符串元素，移除空字符串。
+
+    Args:
+        adapter: ItemAdapter 实例
+    """
+    for field_name in adapter.field_names():
+        value = adapter.get(field_name)
+        if isinstance(value, str):
+            value = value.strip()
+            value = re.sub(r'\s+', ' ', value)
+            adapter[field_name] = value
+        elif isinstance(value, list):
+            cleaned_list = []
+            for v in value:
+                if isinstance(v, str):
+                    v = v.strip()
+                    if v:
+                        cleaned_list.append(v)
+                elif v:
+                    cleaned_list.append(v)
+            adapter[field_name] = cleaned_list
+

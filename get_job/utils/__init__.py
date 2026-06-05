@@ -8,4 +8,5 @@ from get_job.utils.spider_helpers import (
     parse_salary,
     extract_full_text,
     save_debug_page,
+    clean_item_fields,
 )

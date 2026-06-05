@@ -1,36 +1,39 @@
 """Pipeline 包：统一导出所有 Pipeline 类
 
-保持与 settings.py 中 ITEM_PIPELINES 配置的兼容性，
-使得 get_job.pipelines.ClassName 的路径引用仍然有效。
+合并多平台同类管道，根据 Item 类型自动分发到对应分支。
+同时保留旧类名别名，确保 settings.py 中的路径引用仍然有效。
 """
 
-from get_job.pipelines.xiaoyuan import (
-    XiaoyuanDataCleanPipeline,
-    XiaoyuanJsonPipeline,
-    XiaoyuanCsvPipeline,
-    XiaoyuanDedupPipeline,
-    XiaoyuanMongoPipeline,
+from get_job.pipelines.pipelines import (
+    DataCleanPipeline,
+    JsonPipeline,
+    DedupPipeline,
+    MongoPipeline,
 )
 
-from get_job.pipelines.liepin import (
-    LiepinDataCleanPipeline,
-    LiepinJsonPipeline,
-    LiepinCsvPipeline,
-    LiepinDedupPipeline,
-    LiepinMongoPipeline,
-)
+# 兼容旧配置的别名
+XiaoyuanDataCleanPipeline = DataCleanPipeline
+XiaoyuanJsonPipeline = JsonPipeline
+XiaoyuanDedupPipeline = DedupPipeline
+XiaoyuanMongoPipeline = MongoPipeline
+LiepinDataCleanPipeline = DataCleanPipeline
+LiepinJsonPipeline = JsonPipeline
+LiepinDedupPipeline = DedupPipeline
+LiepinMongoPipeline = MongoPipeline
 
 __all__ = [
-    # 智联校园招聘
+    # 统一管道
+    'DataCleanPipeline',
+    'JsonPipeline',
+    'DedupPipeline',
+    'MongoPipeline',
+    # 兼容旧配置的别名
     'XiaoyuanDataCleanPipeline',
     'XiaoyuanJsonPipeline',
-    'XiaoyuanCsvPipeline',
     'XiaoyuanDedupPipeline',
     'XiaoyuanMongoPipeline',
-    # 猎聘
     'LiepinDataCleanPipeline',
     'LiepinJsonPipeline',
-    'LiepinCsvPipeline',
     'LiepinDedupPipeline',
     'LiepinMongoPipeline',
 ]
