@@ -5,6 +5,8 @@
 """
 
 from get_job.pipelines.pipelines import (
+    RawDataPipeline,
+    UnifiedTransformPipeline,
     DataCleanPipeline,
     JsonPipeline,
     DedupPipeline,
@@ -22,6 +24,9 @@ LiepinDedupPipeline = DedupPipeline
 LiepinMongoPipeline = MongoPipeline
 
 __all__ = [
+    # 新增管道
+    'RawDataPipeline',
+    'UnifiedTransformPipeline',
     # 统一管道
     'DataCleanPipeline',
     'JsonPipeline',

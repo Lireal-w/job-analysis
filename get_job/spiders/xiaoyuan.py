@@ -171,123 +171,129 @@ class XiaoyuanSpider(BaseSpider):
             link = ji.css(f'{sel["job_link"]}::attr(href)').get()
             if not link:
                 continue
-            item = XiaoyuanJobItem()
-            item["job_title"] = ji.css(f'{sel["job_title"]}::text').get("").strip()
-            item["company_name"] = ji.css(f'{sel["company_name"]}::text').get("").strip()
-            item["salary_desc"] = ji.css(f'{sel["salary"]}::text').get("").strip()
-            item["work_city"] = ji.css(f'{sel["location"]}::text').get("").strip()
-            item["education"] = ji.css(f'{sel["education"]}::text').get("").strip()
-            item["experience"] = ji.css(f'{sel["experience"]}::text').get("").strip()
-            item["source_url"] = urljoin(response.url, link)
+            
+            # 构建包含原始数据的 dict（HTML解析分支）
+            raw_item = {
+                '_platform': 'xiaoyuan',
+                '_raw_data': {},  # HTML解析没有完整原始数据，保留空dict
+                '_data_source': 'html',
+                
+                # 基础字段提取
+                'job_title': ji.css(f'{sel["job_title"]}::text').get("").strip(),
+                'company_name': ji.css(f'{sel["company_name"]}::text').get("").strip(),
+                'salary_desc': ji.css(f'{sel["salary"]}::text').get("").strip(),
+                'work_city': ji.css(f'{sel["location"]}::text').get("").strip(),
+                'education': ji.css(f'{sel["education"]}::text').get("").strip(),
+                'experience': ji.css(f'{sel["experience"]}::text').get("").strip(),
+                
+                'source_url': urljoin(response.url, link),
+                'source_platform': "智联校园招聘",
+            }
+            
             m = re.search(r'/(\d+)', link)
             if m:
-                item["job_id"] = m.group(1)
+                raw_item["job_id"] = m.group(1)
+            
             yield Request(url=urljoin(response.url, link), callback=self.parse_job_detail,
-                          meta={"item": item, "keyword": keyword, "region_name": region_name, "region_id": region_id},
+                          meta={"item": raw_item, "keyword": keyword, "region_name": region_name, "region_id": region_id},
                           dont_filter=True)
 
     def _parse_ssr_job_list(self, ssr_data, keyword, region_name):
+        """解析SSR职位列表数据，返回包含原始数据的dict"""
         job_list = ssr_data.get("position", {}).get("positionState", {}).get("list", [])
         if not job_list:
             logger.warning(f"SSR 数据中未找到职位 - {keyword}/{region_name}")
             return
         logger.info(f"SSR 找到 {len(job_list)} 个职位 - {keyword}/{region_name}")
         for job in job_list:
-            item = XiaoyuanJobItem()
-            item["job_id"] = str(job.get("jobId", ""))
-            item["job_title"] = job.get("name", "")
-            item["job_category"] = job.get("subJobTypeLevelName", "")
-            item["company_name"] = job.get("companyName", "")
-            item["company_id"] = job.get("companyNumber", "")
-            item["company_type"] = job.get("property", "")
-            item["company_scale"] = job.get("companySize", "")
-            item["company_industry"] = job.get("industryName", "")
-            item["salary_desc"] = job.get("salary60", "") or job.get("salaryReal", "")
-            item["work_city"] = job.get("workCity", region_name)
-            item["work_district"] = job.get("cityDistrict", "")
-            item["education"] = job.get("education", "")
-            item["experience"] = job.get("workingExp", "")
-            item["welfare"] = " | ".join(job.get("welfareLabel", []))
-            item["publish_date"] = job.get("publishTime", "")
-            item["recruit_num"] = job.get("recruitNumber", None)
-            cd = job.get("campusJobDetail", {})
-            if cd:
-                if not item["company_scale"]: item["company_scale"] = cd.get("orgSizeName", "")
-                if not item["company_type"]: item["company_type"] = cd.get("orgTypeName", "")
-                if not item["company_industry"]: item["company_industry"] = cd.get("industryName", "")
-            jd = job.get("jobDetailData", {})
-            if jd:
-                pos = jd.get("position", {})
-                if pos:
-                    base = pos.get("base", {})
-                    if base:
-                        if not item["salary_desc"]: item["salary_desc"] = base.get("salary", "")
-                        if not item["education"]: item["education"] = base.get("education", "")
-                        if not item["experience"]: item["experience"] = base.get("positionWorkingExp", "")
-                        item["job_type"] = base.get("workType", "")
-                    desc = pos.get("desc", {})
-                    if desc:
-                        item["job_description"] = desc.get("description", "")
-                        item["welfare"] = " | ".join(desc.get("welfareTags", [])) or item.get("welfare", "")
-                    wl = pos.get("workLocation", {})
-                    if wl:
-                        item["work_address"] = wl.get("address", "")
-                        if not item["work_city"]: item["work_city"] = wl.get("positionWorkCity", "")
-            number = job.get("job_id", "")
-            if number:
-                item["source_url"] = f"https://xiaoyuan.zhaopin.com/job/{number}"
-            item["crawl_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            item["source_platform"] = "智联校园招聘"
+            # 构建包含原始数据的 dict
+            raw_item = {
+                '_platform': 'xiaoyuan',
+                '_raw_data': job,  # 保存完整的原始 SSR 数据
+                '_data_source': 'ssr',
+                
+                # 部分提取的基础字段
+                'job_id': str(job.get("jobId", "")),
+                'job_title': job.get("name", ""),
+                'job_category': job.get("subJobTypeLevelName", ""),
+                'company_name': job.get("companyName", ""),
+                'company_id': str(job.get("companyNumber", "")),
+                'company_type': job.get("property", ""),
+                'company_scale': job.get("companySize", ""),
+                'company_industry': job.get("industryName", ""),
+                'salary_desc': job.get("salary60", "") or job.get("salaryReal", ""),
+                'work_city': job.get("workCity", region_name),
+                'work_district': job.get("cityDistrict", ""),
+                'education': job.get("education", ""),
+                'experience': job.get("workingExp", ""),
+                'welfare': " | ".join(job.get("welfareLabel", [])),
+                'publish_date': job.get("publishTime", ""),
+                'recruit_num': job.get("recruitNumber", None),
+                
+                'source_url': f"https://xiaoyuan.zhaopin.com/job/{job.get('number', '')}" if job.get("number") else "",
+                'crawl_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'source_platform': "智联校园招聘",
+            }
+            
             number = job.get("number", "")
             request = None
             if number:
-                
-                item["source_url"] = f"https://xiaoyuan.zhaopin.com/job/{number}"
-                logger.info(f"准备发出请求 - {item['source_url']}")
+                logger.info(f"准备发出详情请求 - {raw_item['source_url']}")
                 request = Request(
-                    url=item["source_url"], 
+                    url=raw_item["source_url"], 
                     callback=self.parse_job_detail,
-                    meta={"item": item, "keyword": keyword, "region_name": region_name}, 
+                    meta={"item": raw_item, "keyword": keyword, "region_name": region_name}, 
                     dont_filter=True
                 )
-            else:
-                item["source_url"] = ""
-            # yield item
+            
             if request:
                 yield request
 
     def _parse_json_job_list(self, json_data, keyword, region_name):
+        """解析JSON职位列表数据，返回包含原始数据的dict"""
         data = json_data.get("data", {})
         job_list = data.get("list", []) or data.get("result", []) or json_data.get("resultList", [])
+        
         for job in job_list:
-            item = XiaoyuanJobItem()
-            item["job_id"] = str(job.get("jobId", job.get("id", "")))
-            item["job_title"] = job.get("jobName", job.get("title", job.get("positionName", "")))
-            item["job_category"] = job.get("jobCategory", job.get("category", ""))
-            item["company_id"] = str(job.get("companyId", job.get("corpId", "")))
-            item["company_name"] = job.get("companyName", job.get("corpName", job.get("company", "")))
-            item["company_type"] = job.get("companyType", job.get("corpType", ""))
-            item["company_scale"] = job.get("companyScale", job.get("corpScale", ""))
-            item["company_industry"] = job.get("industry", job.get("companyIndustry", ""))
-            item["salary_desc"] = job.get("salary", job.get("salaryDesc", ""))
-            item["salary_min"] = job.get("salaryMin", None)
-            item["salary_max"] = job.get("salaryMax", None)
-            item["work_city"] = job.get("city", job.get("workCity", region_name))
-            item["work_district"] = job.get("district", job.get("workDistrict", ""))
-            item["education"] = job.get("education", job.get("eduLevel", ""))
-            item["experience"] = job.get("experience", job.get("workExp", ""))
-            item["welfare"] = job.get("welfare", job.get("benefit", ""))
-            item["publish_date"] = job.get("publishDate", job.get("createTime", ""))
-            item["recruit_num"] = job.get("recruitNum", job.get("hireNum", ""))
-            job_id = item["job_id"]
+            raw_item = {
+                '_platform': 'xiaoyuan',
+                '_raw_data': job,  # 保存完整原始JSON数据
+                '_data_source': 'json',
+                
+                # 基础字段提取
+                'job_id': str(job.get("jobId", job.get("id", ""))),
+                'job_title': job.get("jobName", job.get("title", job.get("positionName", ""))),
+                'job_category': job.get("jobCategory", job.get("category", "")),
+                'company_id': str(job.get("companyId", job.get("corpId", ""))),
+                'company_name': job.get("companyName", job.get("corpName", job.get("company", ""))),
+                'company_type': job.get("companyType", job.get("corpType", "")),
+                'company_scale': job.get("companyScale", job.get("corpScale", "")),
+                'company_industry': job.get("industry", job.get("companyIndustry", "")),
+                'salary_desc': job.get("salary", job.get("salaryDesc", "")),
+                'salary_min': job.get("salaryMin", None),
+                'salary_max': job.get("salaryMax", None),
+                'work_city': job.get("city", job.get("workCity", region_name)),
+                'work_district': job.get("district", job.get("workDistrict", "")),
+                'education': job.get("education", job.get("eduLevel", "")),
+                'experience': job.get("experience", job.get("workExp", "")),
+                'welfare': job.get("welfare", job.get("benefit", "")),
+                'publish_date': job.get("publishDate", job.get("createTime", "")),
+                'recruit_num': job.get("recruitNum", job.get("hireNum", "")),
+                
+                'source_url': f"https://www.zhaopin.com/companydetail/{job.get('jobId', '')}" if job.get("jobId") else "",
+                'source_platform': "智联校园招聘",
+            }
+            
+            job_id = raw_item["job_id"]
             if job_id:
-                item["source_url"] = f"https://www.zhaopin.com/companydetail/{job_id}"
-                yield Request(url=item["source_url"], callback=self.parse_job_detail,
-                              meta={"item": item, "keyword": keyword, "region_name": region_name}, dont_filter=True)
+                yield Request(
+                    url=raw_item["source_url"], 
+                    callback=self.parse_job_detail,
+                    meta={"item": raw_item, "keyword": keyword, "region_name": region_name}, 
+                    dont_filter=True
+                )
             else:
-                item["source_url"] = ""
-                item["source_platform"] = "智联校园招聘"
-                yield item
+                yield raw_item
 
     # ---------- API 分页请求 ----------
 
@@ -328,70 +334,113 @@ class XiaoyuanSpider(BaseSpider):
 
     @staticmethod
     def _build_job_item_from_api(job, keyword, region_name):
-        item = XiaoyuanJobItem()
-        item["job_id"] = str(job.get("jobId", ""))
-        item["job_title"] = job.get("name", "")
-        item["job_category"] = job.get("subJobTypeLevelName", "")
-        item["job_type"] = job.get("workType", "")
-        item["company_name"] = job.get("companyName", "")
-        item["company_id"] = job.get("companyNumber", "")
-        item["company_type"] = job.get("property", "") or job.get("propertyName", "")
-        item["company_scale"] = job.get("companySize", "")
-        item["company_industry"] = job.get("industryName", "")
-        item["salary_desc"] = job.get("salary60", "") or job.get("salaryReal", "")
-        item["work_city"] = job.get("workCity", "")
-        item["work_district"] = job.get("cityDistrict", "")
-        item["work_address"] = job.get("jobDetailData", {}).get("position", {}).get("workLocation", {}).get("address", "")
-        item["education"] = job.get("education", "")
-        item["experience"] = job.get("workingExp", "")
-        item["publish_date"] = job.get("publishTime", "")
-        item["recruit_num"] = job.get("recruitNumber", 0)
+        """从API响应构建包含原始数据的dict"""
+        raw_item = {
+            '_platform': 'xiaoyuan',
+            '_raw_data': job,  # 保存完整API响应数据
+            '_data_source': 'api',
+            
+            # 基础字段
+            'job_id': str(job.get("jobId", "")),
+            'job_title': job.get("name", ""),
+            'job_category': job.get("subJobTypeLevelName", ""),
+            'job_type': job.get("workType", ""),
+            'company_name': job.get("companyName", ""),
+            'company_id': str(job.get("companyNumber", "")),
+            'company_type': job.get("property", "") or job.get("propertyName", ""),
+            'company_scale': job.get("companySize", ""),
+            'company_industry': job.get("industryName", ""),
+            'salary_desc': job.get("salary60", "") or job.get("salaryReal", ""),
+            'work_city': job.get("workCity", ""),
+            'work_district': job.get("cityDistrict", ""),
+            'work_address': job.get("jobDetailData", {}).get("position", {}).get("workLocation", {}).get("address", ""),
+            'education': job.get("education", ""),
+            'experience': job.get("workingExp", ""),
+            'publish_date': job.get("publishTime", ""),
+            'recruit_num': job.get("recruitNumber", 0),
+            
+            'source_url': f"https://xiaoyuan.zhaopin.com/position/{job.get('number', '')}" if job.get("number") else "",
+            'crawl_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'source_platform': "智联校园招聘",
+        }
+        
+        # 补充职位描述和技能
         jd = job.get("jobDetailData", {})
-        item["job_description"] = jd.get("position", {}).get("desc", {}).get("description", "") if jd else ""
-        item["skills"] = [s.get("name", "") for s in job.get("jobSkillTags", []) if s.get("name")]
-        wl = job.get("welfareLabel", [])
-        item["welfare"] = ", ".join(wl) if isinstance(wl, list) else str(wl)
-        number = job.get("number", "")
-        item["source_url"] = f"https://xiaoyuan.zhaopin.com/position/{number}" if number else ""
-        item["crawl_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        item["source_platform"] = "智联校园招聘"
-        return item
+        if jd:
+            raw_item["job_description"] = jd.get("position", {}).get("desc", {}).get("description", "")
+        
+        skill_tags = job.get("jobSkillTags", [])
+        if isinstance(skill_tags, list):
+            raw_item["skills"] = [s.get("name", "") for s in skill_tags if s.get("name")]
+        
+        welfare_labels = job.get("welfareLabel", [])
+        if isinstance(welfare_labels, list):
+            raw_item["welfare"] = ", ".join(welfare_labels)
+        
+        return raw_item
 
     # ---------- 职位详情解析 ----------
 
     def parse_job_detail(self, response):
-        item = response.meta.get("item", XiaoyuanJobItem())
+        """解析职位详情页，补充字段到原始dict"""
+        item = response.meta.get("item", {})
         keyword = response.meta.get("keyword", "")
         region_name = response.meta.get("region_name", "")
+        
+        # 确保是 dict 类型
+        if not isinstance(item, dict):
+            item = {}
+        
         sel = self.JOB_DETAIL_SELECTORS
+        
+        # 补充缺失的基础字段
         if not item.get("job_id"):
             m = re.search(r'/companydetail/(\d+)', response.url)
             item["job_id"] = m.group(1) if m else ""
-        for field, key in [("job_title", "job_title"), ("salary_desc", "salary"), ("work_city", "location"),
-                           ("experience", "experience"), ("education", "education"),
-                           ("company_name", "company_name"), ("company_scale", "company_scale"),
-                           ("company_industry", "company_industry")]:
+        
+        # 从HTML补充字段
+        for field, key in [("job_title", "job_title"), ("salary_desc", "salary"), 
+                           ("work_city", "location"), ("experience", "experience"), 
+                           ("education", "education"), ("company_name", "company_name"), 
+                           ("company_scale", "company_scale"), ("company_industry", "company_industry")]:
             if not item.get(field):
                 item[field] = response.css(f'{sel[key]}::text').get("").strip()
+        
+        # 提取职位描述和要求
         jd = response.css(sel["job_description"])
         item["job_description"] = extract_full_text(jd) if jd else ""
         jr = response.css(sel["job_requirements"])
         item["job_requirement"] = extract_full_text(jr) if jr else ""
+        
+        # 福利待遇
         if not item.get("welfare"):
             wi = response.css(f'{sel["welfare"]}::text').getall()
             item["welfare"] = " | ".join(w.strip() for w in wi if w.strip())
+        
+        # 工作地址
         if not item.get("work_address"):
             item["work_address"] = response.css(f'{sel["location"]}::text').get("").strip()
+        
+        # 更新元数据
         item["source_url"] = response.url
         item["source_platform"] = "智联校园招聘"
+        
+        # 仍然保留原始数据结构，供Pipeline转换
         yield item
+        
         save_debug_page(response, f"job_detail_{response.url.split('/')[-1]}")
+        
+        # 公司详情页请求保持不变
         company_url = response.css(f'{sel["company_name"]}::attr(href)').get()
         if not company_url and item.get("company_id"):
             company_url = self.COMPANY_DETAIL_URL.format(company_id=item["company_id"])
         if company_url:
-            yield Request(url=urljoin(response.url, company_url), callback=self.parse_company_detail,
-                          meta={"region_name": region_name, "company_name": item.get("company_name", "")}, dont_filter=True)
+            yield Request(
+                url=urljoin(response.url, company_url), 
+                callback=self.parse_company_detail,
+                meta={"region_name": region_name, "company_name": item.get("company_name", "")}, 
+                dont_filter=True
+            )
 
     # ---------- 公司详情解析 ----------
 
@@ -451,16 +500,27 @@ class XiaoyuanSpider(BaseSpider):
                 link = ji.css(f'{ss["job_link"]}::attr(href), a::attr(href)').get()
                 if not link:
                     continue
-                job = XiaoyuanJobItem()
-                job["job_title"] = ji.css(f'{ss["job_title"]}::text, a::text').get("").strip()
-                job["company_name"] = item.get("company_name", "")
-                job["company_id"] = item.get("company_id", "")
-                job["salary_desc"] = ji.css(f'{ss["salary"]}::text, span.salary::text').get("").strip()
-                job["work_city"] = response.meta.get("region_name", "")
-                job["source_url"] = urljoin(response.url, link)
+                
+                # 构建包含原始数据的 dict（公司页内职位列表）
+                job = {
+                    '_platform': 'xiaoyuan',
+                    '_raw_data': {},  # HTML解析没有完整原始数据
+                    '_data_source': 'company_page',
+                    
+                    'job_title': ji.css(f'{ss["job_title"]}::text, a::text').get("").strip(),
+                    'company_name': item.get("company_name", ""),
+                    'company_id': item.get("company_id", ""),
+                    'salary_desc': ji.css(f'{ss["salary"]}::text, span.salary::text').get("").strip(),
+                    'work_city': response.meta.get("region_name", ""),
+                    
+                    'source_url': urljoin(response.url, link),
+                    'source_platform': "智联校园招聘",
+                }
+                
                 jm = re.search(r'/(\d+)', link)
                 if jm:
                     job["job_id"] = jm.group(1)
+                
                 yield Request(url=urljoin(response.url, link), callback=self.parse_job_detail,
                               meta={"item": job, "keyword": "", "region_name": response.meta.get("region_name", "")},
                               dont_filter=True)

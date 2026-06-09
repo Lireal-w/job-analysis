@@ -13,6 +13,252 @@ logger = logging.getLogger(__name__)
 
 
 # ==========================================
+# 原始数据保存管道（新增）
+# ==========================================
+
+class RawDataPipeline:
+    """原始数据保存管道：将Spider返回的原始数据保存到MongoDB专用集合
+    
+    优先级：50（最高优先级，在其他处理之前执行）
+    
+    功能：
+    - 检测 Item 是否包含 _raw_data 字段
+    - 将原始数据保存到 raw_xiaoyuan_jobs 集合
+    - 保留原始数据结构供后续审计和分析
+    """
+    
+    def __init__(self):
+        self.saved_count = 0
+    
+    def open_spider(self):
+        """初始化MongoDB连接"""
+        from get_job.utils.mongo_helper import get_mongo_client, get_database
+        from scrapy.utils.project import get_project_settings
+        
+        try:
+            get_mongo_client()
+            self.db = get_database()
+            settings = get_project_settings()
+            self.raw_collection_name = settings.get('RAW_DATA_COLLECTION', 'raw_xiaoyuan_jobs')
+            logger.info(f"RawDataPipeline 已初始化，原始数据集合: {self.raw_collection_name}")
+        except Exception as e:
+            logger.error(f"RawDataPipeline 初始化失败: {e}")
+            raise
+    
+    def close_spider(self):
+        """输出统计信息"""
+        logger.info(f"RawDataPipeline 统计: 本次运行保存 {self.saved_count} 条原始数据")
+    
+    def process_item(self, item):
+        """处理Item，保存原始数据"""
+        # 只处理包含 _raw_data 的 dict 类型数据
+        if not isinstance(item, dict) or '_raw_data' not in item:
+            return item
+        
+        # 检查开关
+        from scrapy.utils.project import get_project_settings
+        settings = get_project_settings()
+        if not settings.getbool('RAW_DATA_ENABLED', True):
+            return item
+        
+        try:
+            # 构建原始数据文档
+            raw_doc = {
+                '_platform': item.get('_platform', 'unknown'),
+                '_data_source': item.get('_data_source', 'unknown'),
+                '_crawl_time': item.get('crawl_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+                '_raw_data': item['_raw_data'],  # 完整的原始数据
+                '_extracted_fields': {
+                    k: v for k, v in item.items() 
+                    if not k.startswith('_')
+                },  # 已提取的基础字段快照
+            }
+            
+            # 保存到MongoDB
+            collection = self.db[self.raw_collection_name]
+            collection.insert_one(raw_doc)
+            self.saved_count += 1
+            
+            if self.saved_count % 100 == 0:
+                logger.info(f"RawDataPipeline 已保存 {self.saved_count} 条原始数据")
+        
+        except Exception as e:
+            logger.error(f"RawDataPipeline 保存原始数据失败: {e}")
+        
+        # 继续传递 item 到下一个 Pipeline
+        return item
+
+
+# ==========================================
+# 统一转换管道（新增）
+# ==========================================
+
+class UnifiedTransformPipeline:
+    """统一数据转换管道：将原始数据dict转换为统一的BaseJobItem模型
+    
+    优先级：75（在RawDataPipeline之后，DataCleanPipeline之前）
+    
+    功能：
+    - 根据 _platform 标识识别数据来源
+    - 调用对应平台的转换函数
+    - 将 dict 转换为 BaseJobItem 或其子类实例
+    - 移除 _platform, _raw_data 等元字段
+    """
+    
+    def __init__(self):
+        # 平台转换函数注册表
+        self.transformers = {
+            'xiaoyuan': self._transform_xiaoyuan,
+            # 未来可扩展其他平台
+            # 'liepin': self._transform_liepin,
+        }
+    
+    def process_item(self, item):
+        """处理Item，转换为统一模型"""
+        # 只处理 dict 类型且包含 _platform 的数据
+        if not isinstance(item, dict) or '_platform' not in item:
+            return item
+        
+        platform = item.get('_platform')
+        transformer = self.transformers.get(platform)
+        if not transformer:
+            logger.warning(f"未找到平台 {platform} 的转换函数，跳过转换")
+            return item
+        
+        try:
+            # 执行转换
+            transformed_item = transformer(item)
+            logger.debug(f"成功转换 {platform} 平台数据: job_id={transformed_item.get('job_id')}")
+            return transformed_item
+        
+        except Exception as e:
+            logger.error(f"UnifiedTransformPipeline 转换失败 [{platform}]: {e}")
+            # 转换失败时丢弃该Item
+            raise DropItem(f"数据转换失败: {e}")
+    
+    def _transform_xiaoyuan(self, raw_dict: dict):
+        """将智联校园招聘原始数据转换为 XiaoyuanJobItem"""
+        from get_job.items import XiaoyuanJobItem
+        
+        item = XiaoyuanJobItem()
+        raw_data = raw_dict.get('_raw_data', {})
+        
+        # 策略1：优先使用已提取的基础字段
+        base_fields = [
+            'job_id', 'job_title', 'job_category', 'job_type',
+            'company_id', 'company_name', 'company_type', 'company_scale', 'company_industry',
+            'salary_min', 'salary_max', 'salary_desc',
+            'work_city', 'work_district', 'work_address',
+            'education', 'experience', 'job_description', 'job_requirement',
+            'skills', 'welfare', 'recruit_num', 'publish_date', 'deadline',
+            'source_url', 'crawl_time', 'source_platform',
+        ]
+        
+        for field in base_fields:
+            if field in raw_dict and raw_dict[field]:
+                item[field] = raw_dict[field]
+        
+        # 策略2：从原始数据中补充缺失字段
+        if raw_data:
+            self._enrich_from_raw_data(item, raw_data)
+        
+        # 移除元字段
+        item.pop('_platform', None)
+        item.pop('_raw_data', None)
+        item.pop('_data_source', None)
+        
+        return item
+    
+    def _enrich_from_raw_data(self, item, raw_data: dict):
+        """从原始SSR/API数据中补充缺失字段"""
+        
+        # 职位类别
+        if not item.get('job_category'):
+            item['job_category'] = raw_data.get('subJobTypeLevelName', '')
+        
+        # 工作类型
+        if not item.get('job_type'):
+            item['job_type'] = raw_data.get('workType', '')
+        
+        # 公司信息补充
+        if not item.get('company_type'):
+            item['company_type'] = raw_data.get('property', '') or raw_data.get('propertyName', '')
+        
+        if not item.get('company_scale'):
+            item['company_scale'] = raw_data.get('companySize', '')
+        
+        if not item.get('company_industry'):
+            item['company_industry'] = raw_data.get('industryName', '')
+        
+        # 薪资补充
+        if not item.get('salary_desc'):
+            item['salary_desc'] = raw_data.get('salary60', '') or raw_data.get('salaryReal', '')
+        
+        # 工作地点补充
+        if not item.get('work_district'):
+            item['work_district'] = raw_data.get('cityDistrict', '')
+        
+        # 招聘人数
+        if not item.get('recruit_num'):
+            item['recruit_num'] = raw_data.get('recruitNumber', None)
+        
+        # 发布日期
+        if not item.get('publish_date'):
+            item['publish_date'] = raw_data.get('publishTime', '')
+        
+        # 福利标签
+        if not item.get('welfare'):
+            welfare_labels = raw_data.get('welfareLabel', [])
+            if isinstance(welfare_labels, list):
+                item['welfare'] = " | ".join(welfare_labels)
+        
+        # 从嵌套结构中提取更多信息
+        campus_detail = raw_data.get('campusJobDetail', {})
+        if campus_detail:
+            if not item.get('company_scale'):
+                item['company_scale'] = campus_detail.get('orgSizeName', '')
+            if not item.get('company_type'):
+                item['company_type'] = campus_detail.get('orgTypeName', '')
+        
+        # 从 jobDetailData 中提取详细信息
+        job_detail = raw_data.get('jobDetailData', {})
+        if job_detail:
+            position = job_detail.get('position', {})
+            if position:
+                base_info = position.get('base', {})
+                if base_info:
+                    if not item.get('salary_desc'):
+                        item['salary_desc'] = base_info.get('salary', '')
+                    if not item.get('education'):
+                        item['education'] = base_info.get('education', '')
+                    if not item.get('experience'):
+                        item['experience'] = base_info.get('positionWorkingExp', '')
+                    if not item.get('job_type'):
+                        item['job_type'] = base_info.get('workType', '')
+                
+                desc_info = position.get('desc', {})
+                if desc_info:
+                    if not item.get('job_description'):
+                        item['job_description'] = desc_info.get('description', '')
+                    welfare_tags = desc_info.get('welfareTags', [])
+                    if welfare_tags and not item.get('welfare'):
+                        item['welfare'] = " | ".join(welfare_tags)
+                
+                work_location = position.get('workLocation', {})
+                if work_location:
+                    if not item.get('work_address'):
+                        item['work_address'] = work_location.get('address', '')
+                    if not item.get('work_city'):
+                        item['work_city'] = work_location.get('positionWorkCity', '')
+        
+        # 技能标签
+        if not item.get('skills'):
+            skill_tags = raw_data.get('jobSkillTags', [])
+            if isinstance(skill_tags, list):
+                item['skills'] = [s.get('name', '') for s in skill_tags if s.get('name')]
+
+
+# ==========================================
 # 平台配置注册表
 # ==========================================
 
