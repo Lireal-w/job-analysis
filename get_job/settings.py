@@ -75,7 +75,11 @@ EXTENSIONS = {
 
 # Configure item pipelines
 ITEM_PIPELINES = {
-    # 数据清洗管道（优先执行，根据 Item 类型自动分发）
+    # 原始数据保存管道（最高优先级）
+    "get_job.pipelines.RawDataPipeline": 50,
+    # 统一数据转换管道
+    "get_job.pipelines.UnifiedTransformPipeline": 75,
+    # 数据清洗管道（根据 Item 类型自动分发）
     "get_job.pipelines.DataCleanPipeline": 100,
     # 去重管道（按平台分别去重）
     "get_job.pipelines.DedupPipeline": 200,
@@ -154,3 +158,13 @@ RETRY_HTTP_CODES = [500, 502, 503, 504, 408, 429]
 # 下载超时
 DOWNLOAD_TIMEOUT = 30
 DUPEFILTER_CLASS = 'scrapy.dupefilters.RFPDupeFilter'
+
+# ==========================================
+# 原始数据保存配置
+# ==========================================
+
+# 是否启用原始数据保存功能
+RAW_DATA_ENABLED = True
+
+# 原始数据MongoDB集合名称
+RAW_DATA_COLLECTION = "raw_xiaoyuan_jobs"
